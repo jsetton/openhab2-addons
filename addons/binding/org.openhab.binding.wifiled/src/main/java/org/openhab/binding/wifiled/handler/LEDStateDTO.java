@@ -15,6 +15,7 @@ import java.math.BigDecimal;
 
 import static java.lang.Math.max;
 import static java.lang.Math.min;
+import static java.lang.Math.round;
 
 /**
  * The {@link LEDStateDTO} class holds the data and the settings for a LED device (i.e. the selected colors, the running
@@ -77,8 +78,8 @@ public class LEDStateDTO extends HSBType {
         PercentType s = new PercentType(saturation);
         // set Brightness to 0 if state is OFF
         PercentType b = new PercentType(brightness);
-        PercentType w = new PercentType(white / 255 * 100);
-        PercentType w2 = new PercentType(white2 / 255 * 100);
+        PercentType w = new PercentType((int) round(white / 255.0 * 100));
+        PercentType w2 = new PercentType((int) round(white2 / 255.0 * 100));
 
         StringType p = new StringType(Integer.toString(program));
         PercentType e = new PercentType(100 - (programSpeed / 0x1F * 100)); // Range: 0x00 .. 0x1F. Speed is inversed
