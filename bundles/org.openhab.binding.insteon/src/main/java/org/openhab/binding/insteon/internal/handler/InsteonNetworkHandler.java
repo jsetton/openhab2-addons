@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -26,7 +25,6 @@ import org.eclipse.smarthome.core.thing.Bridge;
 import org.eclipse.smarthome.core.thing.ChannelUID;
 import org.eclipse.smarthome.core.thing.ThingStatus;
 import org.eclipse.smarthome.core.thing.ThingStatusDetail;
-import org.eclipse.smarthome.core.thing.ThingUID;
 import org.eclipse.smarthome.core.thing.binding.BaseBridgeHandler;
 import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.State;
@@ -34,15 +32,15 @@ import org.eclipse.smarthome.io.console.Console;
 import org.eclipse.smarthome.io.transport.serial.SerialPortManager;
 import org.openhab.binding.insteon.internal.InsteonBinding;
 import org.openhab.binding.insteon.internal.config.InsteonNetworkConfiguration;
-import org.openhab.binding.insteon.internal.discovery.InsteonDeviceDiscoveryService;
+import org.openhab.binding.insteon.internal.discovery.InsteonDiscoveryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The {@link InsteonNetworkHandler} is responsible for handling commands, which are
- * sent to one of the channels.
+ * The {@link InsteonNetworkHandler} is responsible for handling insteon network bridge
  *
  * @author Rob Nielsen - Initial contribution
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @SuppressWarnings("null")
@@ -55,14 +53,12 @@ public class InsteonNetworkHandler extends BaseBridgeHandler {
 
     private @Nullable InsteonNetworkConfiguration config;
     private @Nullable InsteonBinding insteonBinding;
-    private @Nullable InsteonDeviceDiscoveryService insteonDeviceDiscoveryService;
+    private @Nullable InsteonDiscoveryService insteonDiscoveryService;
     private @Nullable ScheduledFuture<?> pollingJob = null;
     private @Nullable ScheduledFuture<?> reconnectJob = null;
     private @Nullable ScheduledFuture<?> settleJob = null;
     private long lastInsteonDeviceCreatedTimestamp = 0;
     private @Nullable SerialPortManager serialPortManager;
-    private Map<String, String> deviceInfo = new ConcurrentHashMap<>();
-    private Map<String, String> channelInfo = new ConcurrentHashMap<>();
 
     public static ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
 
@@ -116,7 +112,7 @@ public class InsteonNetworkHandler extends BaseBridgeHandler {
 
     @Override
     public void dispose() {
-        logger.debug("Shutting down Insteon bridge");
+        logger.debug("shutting down Insteon bridge");
 
         if (pollingJob != null) {
             pollingJob.cancel(true);
@@ -138,15 +134,17 @@ public class InsteonNetworkHandler extends BaseBridgeHandler {
             insteonBinding = null;
         }
 
-        deviceInfo.clear();
-        channelInfo.clear();
-
         super.dispose();
     }
 
     @Override
     public void updateState(ChannelUID channelUID, State state) {
         super.updateState(channelUID, state);
+    }
+
+    @Override
+    public void triggerChannel(ChannelUID channelUID, String event) {
+        super.triggerChannel(channelUID, event);
     }
 
     public void bindingDisconnected() {
@@ -169,51 +167,97 @@ public class InsteonNetworkHandler extends BaseBridgeHandler {
         return insteonBinding;
     }
 
-    public void setInsteonDeviceDiscoveryService(InsteonDeviceDiscoveryService insteonDeviceDiscoveryService) {
-        this.insteonDeviceDiscoveryService = insteonDeviceDiscoveryService;
+    public void setInsteonDiscoveryService(InsteonDiscoveryService insteonDiscoveryService) {
+        this.insteonDiscoveryService = insteonDiscoveryService;
     }
 
-    public void addMissingDevices(List<String> missing) {
-        scheduler.execute(() -> {
-            insteonDeviceDiscoveryService.addInsteonDevices(missing, getThing().getUID());
-        });
+    public void discoverMissingThings() {
+      scheduler.execute(() -> {
+          insteonDiscoveryService.discoverMissingThings();
+      });
+    }
+
+    public boolean isDeviceDiscoveryEnabled() {
+        return config.getDeviceDiscoveryEnabled();
+    }
+
+    public boolean isSceneDiscoveryEnabled() {
+        return config.getSceneDiscoveryEnabled();
     }
 
     public void displayDevices(Console console) {
-        display(console, deviceInfo);
+        Map<String, String> devicesInfo = insteonBinding.getDevicesInfo();
+        if (devicesInfo.isEmpty()) {
+            console.println("No device configured!");
+        } else {
+            console.println("There are " + devicesInfo.size() + " devices configured:");
+            display(console, devicesInfo);
+        }
+    }
+
+    public void displayScenes(Console console) {
+        Map<String, String> scenesInfo = insteonBinding.getScenesInfo();
+        if (scenesInfo.isEmpty()) {
+            console.println("No scene configured!");
+        } else {
+            console.println("There are " + scenesInfo.size() + " scenes configured:");
+            display(console, scenesInfo);
+        }
     }
 
     public void displayChannels(Console console) {
-        display(console, channelInfo);
+        Map<String, String> channelsInfo = insteonBinding.getChannelsInfo();
+        if (channelsInfo.isEmpty()) {
+            console.println("No channel available!");
+        } else {
+            console.println("There are " + channelsInfo.size() + " channels available:");
+            display(console, channelsInfo);
+        }
     }
 
-    public void displayLocalDatabase(Console console) {
-        Map<String, String> databaseInfo = insteonBinding.getDatabaseInfo();
-        console.println("local database contains " + databaseInfo.size() + " entries");
-        display(console, databaseInfo);
+    public void displayDeviceDatabase(Console console, String address) {
+        List<String> deviceDBInfo = insteonBinding.getDeviceDBInfo(address);
+        if (deviceDBInfo == null) {
+            console.println("The device address is not valid or configured!");
+        } else if (deviceDBInfo.isEmpty()) {
+            console.println("The all-link database for device " + address + " is empty");
+        } else {
+            console.println("The all-link database for device " + address + " contains "
+                    + deviceDBInfo.size() + " records:");
+            display(console, deviceDBInfo);
+        }
     }
 
-    public void initialized(ThingUID uid, String msg) {
-        deviceInfo.put(uid.getAsString(), msg);
+    public void displayDeviceProductData(Console console, String address) {
+        String deviceProductData = insteonBinding.getDeviceProductData(address);
+        if (deviceProductData == null) {
+            console.println("The device address is not valid or configured!");
+        } else {
+            console.println("The product data for device " + address + " is: " + deviceProductData);
+        }
     }
 
-    public void disposed(ThingUID uid) {
-        deviceInfo.remove(uid.getAsString());
+    public void displayModemDatabase(Console console) {
+        Map<String, String> modemDBInfo = insteonBinding.getModemDBInfo();
+        if (modemDBInfo.isEmpty()) {
+            console.println("The modem database is empty");
+        } else {
+            console.println("The modem database contains " + modemDBInfo.size() + " entries:");
+            display(console, modemDBInfo);
+        }
     }
 
-    public void linked(ChannelUID uid, String msg) {
-        channelInfo.put(uid.getAsString(), msg);
-    }
-
-    public void unlinked(ChannelUID uid) {
-        channelInfo.remove(uid.getAsString());
+    private void display(Console console, List<String> info) {
+        for (String line : info) {
+            console.println(line);
+        }
     }
 
     private void display(Console console, Map<String, String> info) {
-        ArrayList<String> ids = new ArrayList<>(info.keySet());
-        Collections.sort(ids);
-        for (String id : ids) {
-            console.println(info.get(id));
+        List<String> keys = new ArrayList<>(info.keySet());
+        Collections.sort(keys);
+        for (String key : keys) {
+            console.println(info.get(key));
         }
     }
 }

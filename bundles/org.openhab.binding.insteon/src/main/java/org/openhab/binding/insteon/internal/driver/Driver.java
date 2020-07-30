@@ -13,15 +13,14 @@
 package org.openhab.binding.insteon.internal.driver;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.locks.ReentrantLock;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.eclipse.smarthome.io.transport.serial.SerialPortManager;
+import org.openhab.binding.insteon.internal.database.ModemDB;
 import org.openhab.binding.insteon.internal.device.InsteonAddress;
+import org.openhab.binding.insteon.internal.device.InsteonDevice;
 import org.openhab.binding.insteon.internal.message.Msg;
 import org.openhab.binding.insteon.internal.message.MsgListener;
 
@@ -30,41 +29,24 @@ import org.openhab.binding.insteon.internal.message.MsgListener;
  *
  * @author Bernd Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 public class Driver {
     private Port port;
-    private String portName;
     private DriverListener listener;
-    private Map<InsteonAddress, @Nullable ModemDBEntry> modemDBEntries = new HashMap<>();
-    private ReentrantLock modemDBEntriesLock = new ReentrantLock();
 
     public Driver(String portName, DriverListener listener, @Nullable SerialPortManager serialPortManager,
             ScheduledExecutorService scheduler) {
         this.listener = listener;
-        this.portName = portName;
-
-        port = new Port(portName, this, serialPortManager, scheduler);
-    }
-
-    public boolean isReady() {
-        return port.isRunning();
-    }
-
-    public Map<InsteonAddress, @Nullable ModemDBEntry> lockModemDBEntries() {
-        modemDBEntriesLock.lock();
-        return modemDBEntries;
-    }
-
-    public void unlockModemDBEntries() {
-        modemDBEntriesLock.unlock();
+        this.port = new Port(portName, this, serialPortManager, scheduler);
     }
 
     public void addMsgListener(MsgListener listener) {
         port.addListener(listener);
     }
 
-    public void removeListener(MsgListener listener) {
+    public void removeMsgListener(MsgListener listener) {
         port.removeListener(listener);
     }
 
@@ -76,12 +58,28 @@ public class Driver {
         port.stop();
     }
 
+    public void buildLinkDB(InsteonDevice device, long delay) {
+        port.buildLinkDB(device, delay);
+    }
+
     public void writeMessage(Msg m) throws IOException {
         port.writeMessage(m);
     }
 
     public String getPortName() {
-        return portName;
+        return port.getName();
+    }
+
+    public InsteonAddress getModemAddress() {
+        return port.getAddress();
+    }
+
+    public @Nullable InsteonDevice getModemDevice() {
+        return port.getModemDevice();
+    }
+
+    public ModemDB getModemDB() {
+        return port.getModemDB();
     }
 
     public boolean isRunning() {
@@ -92,17 +90,37 @@ public class Driver {
         return port.getAddress().equals(toAddr);
     }
 
-    public void modemDBComplete(Port port) {
+    public void modemFound() {
+        if (getModemDevice() != null) {
+            listener.modemFound();
+        }
+    }
+
+    public void modemDBComplete() {
         if (isModemDBComplete()) {
-            listener.driverCompletelyInitialized();
+            listener.modemDBComplete();
+        }
+    }
+
+    public void modemDBUpdated(InsteonAddress addr, int group) {
+        if (isModemDBComplete()) {
+            listener.modemDBUpdated(addr, group);
         }
     }
 
     public boolean isModemDBComplete() {
-        return port.isModemDBComplete();
+        return port.getModemDB().isComplete();
     }
 
     public void disconnected() {
         listener.disconnected();
+    }
+
+    public void productDataUpdated(InsteonAddress addr) {
+        listener.productDataUpdated(addr);
+    }
+
+    public void requestSent(InsteonAddress addr, long time) {
+        listener.requestSent(addr, time);
     }
 }

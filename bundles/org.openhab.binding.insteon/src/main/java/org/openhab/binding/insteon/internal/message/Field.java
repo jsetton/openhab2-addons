@@ -17,7 +17,7 @@ import java.util.Objects;
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.binding.insteon.internal.device.InsteonAddress;
-import org.openhab.binding.insteon.internal.utils.Utils;
+import org.openhab.binding.insteon.internal.utils.ByteUtils;
 
 /**
  * An Insteon message has several fields with known type and offset
@@ -79,7 +79,7 @@ public final class Field {
         try {
             switch (type) {
                 case BYTE:
-                    s += Utils.getHexByte(getByte(array));
+                    s += ByteUtils.getHexString(getByte(array));
                     break;
                 case INT:
                     s += Integer.toString(getInt(array));

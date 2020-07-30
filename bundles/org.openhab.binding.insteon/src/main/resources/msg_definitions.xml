@@ -73,12 +73,12 @@
 			<byte>0x02</byte>
 			<byte name="Cmd">0x53</byte>
 		</header>
-		<byte name="linkCode"/>
+		<byte name="LinkCode"/>
 		<byte name="ALLLinkGroup"/>
-		<address name="address"/>
-		<byte name="deviceCategory"/>
-		<byte name="subCategory"/>
-		<byte name="firmwareVersion"/>
+		<address name="LinkAddr"/>
+		<byte name="DeviceCategory"/>
+		<byte name="DeviceSubcategory"/>
+		<byte name="FirmwareVersion"/>
 	</msg>
 	<msg name="ButtonEventReport" length="3" direction="FROM_MODEM">
 		<header length="2">
@@ -99,7 +99,7 @@
 			<byte name="Cmd">0x56</byte>
 		</header>
 		<byte name="ALLLinkGroup"/>
-		<address name="address"/>
+		<address name="LinkAddr"/>
 	</msg>
 	<msg name="ALLLinkRecordResponse" length="10" direction="FROM_MODEM">
 		<header length="2">
@@ -120,7 +120,7 @@
 		</header>
 		<byte name="statusByte"/>
 	</msg>
-	<msg name="UnknownMessage5C" length="11" direction="FROM_MODEM">
+	<msg name="MessageFailureReport" length="11" direction="FROM_MODEM">
 		<header length="9">
 			<byte>0x02</byte>
 			<byte name="Cmd">0x5c</byte>
@@ -363,26 +363,26 @@
 			<byte>0x02</byte>
 			<byte name="Cmd">0x6f</byte>
 		</header>
-		<byte name="controlCode"/>
-		<byte name="recordFlags"/>
+		<byte name="ControlCode"/>
+		<byte name="RecordFlags"/>
 		<byte name="ALLLinkGroup"/>
-		<address name="linkAddress"/>
-		<byte name="linkData1"/>
-		<byte name="linkData2"/>
-		<byte name="linkData3"/>
+		<address name="LinkAddress"/>
+		<byte name="LinkData1"/>
+		<byte name="LinkData2"/>
+		<byte name="LinkData3"/>
 	</msg>
 	<msg name="ManageALLLinkRecordReply" length="12" direction="FROM_MODEM">
 		<header length="2">
 			<byte>0x02</byte>
 			<byte name="Cmd">0x6f</byte>
 		</header>
-		<byte name="controlCode"/>
-		<byte name="recordFlags"/>
+		<byte name="ControlCode"/>
+		<byte name="RecordFlags"/>
 		<byte name="ALLLinkGroup"/>
-		<address name="linkAddress"/>
-		<byte name="linkData1"/>
-		<byte name="linkData2"/>
-		<byte name="linkData3"/>
+		<address name="LinkAddress"/>
+		<byte name="LinkData1"/>
+		<byte name="LinkData2"/>
+		<byte name="LinkData3"/>
 		<byte name="ACK/NACK"/>
 	</msg>
 	<msg name="Beep" length="2" direction="TO_MODEM">

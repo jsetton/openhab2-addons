@@ -21,174 +21,201 @@ The free HouseLinc software from Insteon can also be used for configuration, but
 
 ## Supported Things
 
-| Thing  | Type   | Description                  |
-|----------|--------|------------------------------|
-| network  | Bridge | An insteon PLM or hub that is used to communicate with the Insteon devices |
-|device| Thing | Insteon devices such as dimmers, keypads, sensors, etc. |
+| Thing | Type | Description |
+|-------|------|-------------|
+| network  | Bridge | An Insteon PLM or hub that is used to communicate with the Insteon devices |
+| device | Thing | Insteon devices such as dimmers, keypads, sensors, etc. |
+| scene | Thing | Insteon scenes |
+| x10 | Thing | X10 devices such as a switch, dimmer or sensor |
 
 ## Discovery
 
 The network bridge is not automatically discovered, you will have to manually add the it yourself.
 Upon proper configuration of the network bridge, the network device database will be downloaded.
-Any Insteon device that exists in the database and is not currently configured is added to the inbox.
-The naming convention is **Insteon Device AABBCC**, where AA, BB and CC are from the Insteon device address.
+Depending on the bridge discovery parameters, any Insteon devices or scenes that exists in the database and is not currently configured may automatically be added to the inbox.
+The naming convention for devices is **Insteon _Product Description_** if the product data was retrieved, otherwise **Insteon Device AABBCC**, where AA, BB and CC are from the Insteon device address.
+For scenes, it is **Insteon Scene 42**, where 42 is the broadcast group number.
+The device auto-discovery is enabled by default while disabled for scenes.
 X10 devices are not auto discovered.
 
 ## Thing Configuration
 
-###### Network Configuration
+### Network Configuration
 
 The Insteon PLM or hub is configured with the following parameters:
 
 | Parameter | Default | Required | Description |
-|----------|---------:|--------:|-------------|
-| port   |         |   Yes    | **Examples:**<br>- PLM on  Linux: `/dev/ttyS0` or `/dev/ttyUSB0`<br>- Smartenit ZBPLM on Linux: `/dev/ttyUSB0,baudRate=115200`<br>- PLM on Windows: `COM1`<br>- Current  hub (2245-222) at 192.168.1.100 on port 25105, with a poll interval of 1000 ms (1 second): `/hub2/my_user_name:my_password@192.168.1.100:25105,poll_time=1000`<br>- Legacy hub (2242-222) at 192.168.1.100 on port 9761:`/hub/192.168.1.100:9761`<br>- Networked PLM using ser2net at 192.168.1.100 on port 9761:`/tcp/192.168.1.100:9761` |
-| devicePollIntervalSeconds | 300 |  No  | Poll interval of devices in seconds. Poll too often and you will overload the insteon network, leading to sluggish or no response when trying to send messages to devices. The default poll interval of 300 seconds has been tested and found to be a good compromise in a configuration of about 110 switches/dimmers. |
-| additionalDevices | |       No     | Optional file with additional device types. The syntax of the file is identical to the `device_types.xml` file in the source tree. Please remember to post successfully added device types to the openhab group so the developers can include them into the `device_types.xml` file! |
-| additionalFeatures | |      No     | Optional file with additional feature templates, like in the `device_features.xml` file in the source tree. |
+|-----------|:-------:|:--------:|-------------|
+| port | | Yes | **Examples:**<br>- PLM on  Linux: `/dev/ttyS0` or `/dev/ttyUSB0`<br>- Smartenit ZBPLM on Linux: `/dev/ttyUSB0,baudRate=115200`<br>- PLM on Windows: `COM1`<br>- Current  hub (2245-222) at 192.168.1.100 on port 25105, with a poll interval of 1000 ms (1 second): `/hub2/my_user_name:my_password@192.168.1.100:25105,poll_time=1000`<br>- Legacy hub (2242-222) at 192.168.1.100 on port 9761:`/hub/192.168.1.100:9761`<br>- Networked PLM using ser2net at 192.168.1.100 on port 9761:`/tcp/192.168.1.100:9761` |
+| devicePollIntervalSeconds | 300 | Yes | Poll interval of devices in seconds. Poll too often and you will overload the Insteon network, leading to sluggish or no response when trying to send messages to devices. The default poll interval of 300 seconds has been tested and found to be a good compromise in a configuration of about 110 switches/dimmers. |
+| deviceDiscoveryEnabled | true | Yes | Enable discovery of Insteon devices found in the modem database but not configured. |
+| sceneDiscoveryEnabled | false | Yes | Enable discovery of Insteon scenes found in the modem database but not configured. |
+| additionalDeviceTypes | | No | Additional device types file path. The syntax of the file is identical to the `device_types.xml` file in the source tree. |
+| additionalFeatures | | No | Additional feature templates file path. The syntax of the file is identical to the `device_features.xml` file in the source tree. |
+| additionalProducts | | No | Additional products file path. The syntax of the file is identical to the `device_products.xml` file in the source tree. |
 
 >NOTE: For users upgrading from InsteonPLM, The parameter port_1 is now port.
 
-###### Device Configuration
+### Insteon Device Configuration
 
-The Insteon device is configured with the following required parameters:
+The Insteon device is configured with the following parameters:
 
-| Parameter | Description |
-|----------|-------------|
-|address|Insteon or X10 address of the device. Insteon device addresses are in the format 'xx.xx.xx', and can be found on the device. X10 device address are in the format 'x.y' and are typically configured on the device.|
-|productKey|Insteon binding product key that is used to identy the device. Every Insteon device type is uniquely identified by its Insteon product key, typically a six digit hex number. For some of the older device types (in particular the SwitchLinc switches and dimmers), Insteon does not give a product key, so an arbitrary fake one of the format Fxx.xx.xx (or Xxx.xx.xx for X10 devices) is assigned by the binding.|
+| Parameter | Required | Description |
+|-----------|:--------:|-------------|
+| address | Yes | Insteon address of the device. It can be found on the device. Example: 12.34.56. |
+| devCat | No | Insteon device category. It is used to identify the device type in conjunction with subCat parameter. It can be left blank to have the binding automatically retrieve that information from the device directly. For battery powered devices, it will take until the device is awake to get it. It will take precedence over the device value if configured. Example: 0x01 |
+| subCat | No | Insteon device sub category. It is used to identify the device type in conjunction with devCat parameter. It can be left blank to have the binding automatically retrieve that information from the device directly. For battery powered devices, it will take until the device is awake to get it. It will take precedence over the device value if configured. Example: 0x01 |
+| productKey | No | Insteon product key. It is used to identify the device type. It can be left blank to have the binding automatically retrieve that information from the device directly. For battery powered devices, it will take until the device is awake to get it. It will take precedence over the device value but not over the devCat/subCat parameters if configured. Example: 0x01 |
 
-The following is a list of the product keys and associated devices.
-These have been tested and should work out of the box:
+The Insteon device address is sufficient for the binding to determine the device type.
+However, to speed up the initialization sequence, especially for battery powered devices, the devCat and subCat parameters can be specified.
+The Insteon product key can also be used to identify the device over the categories parameters if necessary.
+It is important to note that these product key are mostly different from the one used in the previous version of this binding.
 
-| Model | Description | Product Key | tested by |
-|-------|-------------|-------------|-----------|
-| 2477D | SwitchLinc Dimmer | F00.00.01 | Bernd Pfrommer |
-| 2477S | SwitchLinc Switch | F00.00.02 | Bernd Pfrommer |
-| 2845-222 | Hidden Door Sensor | F00.00.03 | Josenivaldo Benito |
-| 2876S | ICON Switch | F00.00.04 | Patrick Giasson |
-| 2456D3 | LampLinc V2 | F00.00.05 | Patrick Giasson |
-| 2442-222 | Micro Dimmer | F00.00.06 | Josenivaldo Benito |
-| 2453-222 | DIN Rail On/Off | F00.00.07 | Josenivaldo Benito |
-| 2452-222 | DIN Rail Dimmer | F00.00.08 | Josenivaldo Benito |
-| 2458-A1 | MorningLinc RF Lock Controller | F00.00.09 | cdeadlock |
-| 2852-222 | Leak Sensor | F00.00.0A | Kirk McCann |
-| 2672-422 | LED Dimmer | F00.00.0B | ??? |
-| 2476D | SwitchLinc Dimmer | F00.00.0C | LiberatorUSA |
-| 2634-222 | On/Off Dual-Band Outdoor Module | F00.00.0D | LiberatorUSA |
-| 2342-2 | Mini Remote | F00.00.10 | Bernd Pfrommer |
-| 2663-222 | On/Off Outlet | 0x000039 | SwissKid |
-| 2466D | ToggleLinc Dimmer | F00.00.11 | Rob Nielsen |
-| 2466S | ToggleLinc Switch | F00.00.12 | Rob Nielsen |
-| 2672-222 | LED Bulb | F00.00.13 | Rob Nielsen |
-| 2487S | KeypadLinc On/Off 6-Button | F00.00.14 | Bernd Pfrommer |
-| 2334-232 | KeypadLink Dimmer 6-Button | F00.00.15 | Rob Nielsen |
-| 2334-232 | KeypadLink Dimmer 8-Button | F00.00.16 | Rob Nielsen |
-| 2423A1 | iMeter Solo Power Meter | F00.00.17 | Rob Nielsen |
-| 2423A1 | Thermostat 2441TH | F00.00.18 | Daniel Campbell, Bernd Pfrommer |
-| 2457D2 | LampLinc Dimmer | F00.00.19 | Jonathan Huizingh |
-| 2475SDB | In-LineLinc Relay | F00.00.1A | Jim Howard |
-| 2635-222 | On/Off Module | F00.00.1B | Jonathan Huizingh |
-| 2475F | FanLinc Module | F00.00.1C | Brian Tillman |
-| 2456S3 | ApplianceLinc | F00.00.1D | ??? |
-| 2674-222 | LED Bulb (recessed) | F00.00.1E | Steve Bate |
-| 2477SA1 | 220V 30-amp Load Controller N/O | F00.00.1F | Shawn R. |
-| 2342-222 | Mini Remote (8 Button) | F00.00.20 | Bernd Pfrommer |
-| 2441V | Insteon Thermostat Adaptor for Venstar | F00.00.21 | Bernd Pfrommer |
-| 2982-222 | Insteon Smoke Bridge | F00.00.22 | Bernd Pfrommer |
-| 2487S | KeypadLinc On/Off 8-Button | F00.00.23 | Tom Weichmann |
-| 2450 | IO Link | 0x00001A | Bernd Pfrommer |
-| 2486D | KeypadLinc Dimmer | 0x000037 | Patrick Giasson, Joe Barnum |
-| 2484DWH8 | KeypadLinc Countdown Timer | 0x000041 | Rob Nielsen |
-| Various | PLM or hub | 0x000045 | Bernd Pfrommer |
-| 2843-222 | Wireless Open/Close Sensor | 0x000049 | Josenivaldo Benito |
-| 2842-222 | Motion Sensor | 0x00004A | Bernd Pfrommer |
-| 2844-222 | Motion Sensor II | F00.00.24 | Rob Nielsen |
-| 2486DWH8 | KeypadLinc Dimmer | 0x000051 | Chris Graham |
-| 2472D | OutletLincDimmer | 0x000068 | Chris Graham |
-| X10 switch | generic X10 switch | X00.00.01 | Bernd Pfrommer |
-| X10 dimmer | generic X10 dimmer | X00.00.02 | Bernd Pfrommer |
-| X10 motion | generic X10 motion sensor | X00.00.03 | Bernd Pfrommer |
+A list of the supported products can be found [here](https://raw.githubusercontent.com/openhab/openhab-addons/master/bundles/org.openhab.binding.insteon/src/main/resources/device_products.xml).
+
+### Insteon Scene Configuration
+
+The Insteon scene is configured with the following parameter:
+
+| Parameter | Required | Description |
+|-----------|:--------:|-------------|
+| group | Yes | Insteon scene group number between 1 and 254 and can be found in the scene detailed information in the Insteon mobile app. |
+
+### X10 Devices Configuration
+
+The X10 device is configured with the following parameters:
+
+| Parameter | Required | Description |
+|-----------|:--------:|-------------|
+| houseCode | Yes | X10 house code of the device. Example: A|
+| unitCode | Yes | X10 unit code of the device. Example: 1 |
+| deviceType | Yes | X10 device type |
+
+The following is a list of the supported X10 device types:
+
+| Device Type | Description |
+|-------------|-------------|
+| X10_Switch | X10 Switch |
+| X10_Dimmer | X10 Dimmer |
+| X10_Sensor | X10 Sensor |
 
 ## Channels
 
 Below is the list of possible channels for the Insteon devices.
-In order to determine which channels a device supports, you can look at the device in the UI, or with the command `display_devices` in the console.
+In order to determine which channels a device supports, you can look at the device in the UI, or with the commands `display_devices` and `display_scenes` in the console.
 
-| channel  | type   | description                  |
-|----------|--------|------------------------------|
-| acDelay | Number | AC Delay |
-| backlightDuration | Number | Back Light Duration |
-| batteryLevel | Number | Battery Level |
-| batteryPercent | Number:Dimensionless | Battery Percent |
-| batteryWatermarkLevel | Number | Battery Watermark Level |
-| beep | Switch | Beep |
-| bottomOutlet | Switch | Bottom Outlet |
-| buttonA | Switch | Button A |
-| buttonB | Switch | Button B |
-| buttonC | Switch | Button C |
-| buttonD | Switch | Button D |
-| buttonE | Switch | Button E |
-| buttonF | Switch | Button F |
-| buttonG | Switch | Button G |
-| buttonH | Switch | Button H |
-| broadcastOnOff | Switch | Broadcast On/Off |
-| contact | Contact | Contact |
-| coolSetPoint | Number | Cool Set Point |
-| dimmer | Dimmer | Dimmer |
-| fan | Number | Fan |
-| fanMode | Number | Fan Mode |
-| fastOnOff | Switch | Fast On/Off |
-| fastOnOffButtonA | Switch | Fast On/Off Button A |
-| fastOnOffButtonB | Switch | Fast On/Off Button B |
-| fastOnOffButtonC | Switch | Fast On/Off Button C |
-| fastOnOffButtonD | Switch | Fast On/Off Button D |
-| heatSetPoint | Number | Heat Set Point |
-| humidity | Number | Humidity |
-| humidityHigh | Number | Humidity High |
-| humidityLow | Number | Humidity Low |
-| isCooling | Number | Is Cooling |
-| isHeating | Number | Is Heating |
-| keypadButtonA | Switch | Keypad Button A |
-| keypadButtonB | Switch | Keypad Button B |
-| keypadButtonC | Switch | Keypad Button C |
-| keypadButtonD | Switch | Keypad Button D |
-| keypadButtonE | Switch | Keypad Button E |
-| keypadButtonF | Switch | Keypad Button F |
-| keypadButtonG | Switch | Keypad Button G |
-| keypadButtonH | Switch | Keypad Button H |
-| kWh | Number:Energy | Kilowatt Hour |
-| lastHeardFrom | DateTime | Last Heard From |
-| ledBrightness | Number | LED brightness |
-| ledOnOff | Switch | LED On/Off |
-| lightDimmer | Dimmer | light Dimmer |
-| lightLevel | Number | Light Level |
-| lightLevelAboveThreshold | Contact | Light Level Above/Below Threshold |
-| loadDimmer | Dimmer | Load Dimmer |
-| loadSwitch | Switch | Load Switch |
-| loadSwitchFastOnOff | Switch | Load Switch Fast On/Off |
-| loadSwitchManualChange | Number | Load Switch Manual Change |
-| lowBattery | Contact | Low Battery |
-| manualChange | Number | Manual Change |
-| manualChangeButtonA | Number | Manual Change Button A |
-| manualChangeButtonB | Number | Manual Change Button B |
-| manualChangeButtonC | Number | Manual Change Button C |
-| manualChangeButtonD | Number | Manual Change Button D |
-| notification | Number | Notification |
-| onLevel | Number | On Level |
-| rampDimmer | Dimmer | Ramp Dimmer |
-| rampRate | Number | Ramp Rate |
-| reset | Switch | Reset |
-| stage1Duration | Number | Stage 1 Duration |
-| switch | Switch | Switch |
-| systemMode | Number | System Mode |
-| tamperSwitch | Contact | Tamper Switch |
-| temperature | Number:Temperature | Temperature |
-| temperatureLevel | Number | Temperature Level |
-| topOutlet | Switch | Top Outlet |
-| update | Switch | Update |
-| watts | Number:Power | Watts |
+### State Channels
 
+| Channel | Type | Access Mode | Description |
+|---------|------|-------------|-------------|
+| acDelay | Number:Time | R/W | Thermostat AC Delay |
+| backlightDuration | Number:Time | R/W | Thermostat Back Light Duration |
+| batteryLevel | Number:Dimensionless | R | Battery Level |
+| batteryPowered | Switch | R | Battery Powered State |
+| beep | Switch | W | Beep (write only) |
+| broadcastOnOff | Switch | W | Scene Broadcast On/Off (write only) |
+| buttonA | Switch | R/W | Button A |
+| buttonB | Switch | R/W | Button B |
+| buttonC | Switch | R/W | Button C |
+| buttonD | Switch | R/W | Button D |
+| buttonE | Switch | R/W | Button E |
+| buttonF | Switch | R/W | Button F |
+| buttonG | Switch | R/W | Button G |
+| buttonH | Switch | R/W | Button H |
+| buttonBeep | Switch | R/W | Beep on Button Press |
+| buttonConfig | String | R/W | Keypad Button Config |
+| buttonLock | Switch | R/W | Thermostat Button Lock |
+| carbonMonoxideAlarm | Switch | R | Smoke Sensor Carbon Monoxide Alarm |
+| contact | Contact | R | Sensor Contact State |
+| coolSetPoint | Number:Temperature | R/W | Thermostat Cool Set Point |
+| daylight | Contact | R | Sensor Daylight State |
+| dimmer | Dimmer | R/W | Light Dimmer |
+| energyOffset | Number:Temperature | R/W | Thermostat Energy Set Point Offset |
+| energySaving | Switch | R | Thermostat Energy Saving |
+| fanMode | String | R/W | Thermostat Fan Mode |
+| fanSpeed | String | R/W | Ceiling Fan Speed |
+| fastOnOff | Switch | W | Fast On/Off (write only) |
+| heatSetPoint | Number:Temperature | R/W | Thermostat Heat Set Point |
+| humidity | Number:Dimensionless | R | Current Humidity |
+| humidityHigh | Number:Dimensionless | R/W | Thermostat Humidity High |
+| humidityLow | Number:Dimensionless | R/W | Thermostat Humidity Low |
+| kWh | Number:Energy | R | Power Meter Kilowatt Hour |
+| lastHeardFrom | DateTime | R | Last Heard From |
+| ledBrightness | Dimmer | R/W | LED Brightness |
+| ledOnOff | Switch | R/W | LED On/Off |
+| ledTraffic | Switch | R/W | LED Blink on Traffic |
+| lightDimmer | Dimmer | R/W | Ceiling Fan Light Dimmer |
+| lightLevel | Number:Dimensionless | R | Sensor Light Level |
+| loadSense | Switch | R/W | Load Sense Outlet |
+| loadSenseBottom | Switch | R/W | Load Sense Bottom Outlet |
+| loadSenseTop | Switch | R/W | Load Sense Top Outlet |
+| lock | Switch | R/W | Lock |
+| lowBattery | Switch | R | Sensor Low Battery |
+| manualChange | String | W | Manual Change (write only) |
+| momentaryDuration | Number:Time | R/W | I/O Momentary Duration |
+| motionDetected | Switch | R | Motion Sensor Motion Detected |
+| onLevel | Dimmer | R/W | On Level |
+| outletBottom | Switch | R/W | Outlet Bottom |
+| outletTop | Switch | R/W | Outlet Top |
+| programLock | Switch | R/W | Local Programming Lock |
+| rampDimmer | Dimmer | W | Ramp Dimmer (write only) |
+| rampRate | Number:Time | R/W | Ramp Rate |
+| relayMode | String | R/W | I/O Linc Output Relay Mode |
+| relaySensorFollow | Switch | R/W | I/O Linc Output Relay Follows Input Sensor |
+| reset | Switch | W | Power Meter Reset (write only) |
+| resumeDimLevel | Switch | R/W | Resume Dim Level |
+| rollershutter | Rollershutter | R/W | Rollershutter |
+| smokeAlarm | Switch | R | Smoke Sensor Smoke Alarm |
+| stage1Duration | Number:Time | R/W | Thermostat Stage 1 Duration |
+| stayAwake | Switch | R/W | Sensor Stay Awake for Extended Time (write only on some products) |
+| switch | Switch | R/W | Switch |
+| syncTime | Switch | W | Thermostat Sync Time (write only) |
+| systemMode | String | R/W | System Mode |
+| systemState | String | R | System State |
+| tamperSwitch | Contact | R | Sensor Tamper Switch |
+| temperature | Number:Temperature | R | Current Temperature |
+| temperatureFormat | String | R/W | Thermostat Temperature Format |
+| testAlarm | Switch | R | Smoke Sensor Test Alarm |
+| timeFormat | String | R/W | Thermostat Time Format |
+| toggleModeButtonA | Switch | R/W | Toggle Mode Button A |
+| toggleModeButtonB | Switch | R/W | Toggle Mode Button B |
+| toggleModeButtonC | Switch | R/W | Toggle Mode Button C |
+| toggleModeButtonD | Switch | R/W | Toggle Mode Button D |
+| toggleModeButtonE | Switch | R/W | Toggle Mode Button E |
+| toggleModeButtonF | Switch | R/W | Toggle Mode Button F |
+| toggleModeButtonG | Switch | R/W | Toggle Mode Button G |
+| toggleModeButtonH | Switch | R/W | Toggle Mode Button H |
+| update | Switch | W | Power Meter Update (write only) |
+| waterDetected | Switch | R | Leak Sensor Water Detected |
+| watts | Number:Power | R | Power Meter Watts |
+
+### Trigger Channels
+
+| Channel | Description |
+|---------|-------------|
+| eventButton | Event Button |
+| eventButtonMain | Event Button Main |
+| eventButtonA | Event Button A |
+| eventButtonB | Event Button B |
+| eventButtonC | Event Button C |
+| eventButtonD | Event Button D |
+| eventButtonE | Event Button E |
+| eventButtonF | Event Button F |
+| eventButtonG | Event Button G |
+| eventButtonH | Event Button H |
+
+The following is a list of the supported triggered events:
+
+| Event | Description |
+|-------|-------------|
+| `PRESSED_ON` | Button Pressed On (Regular On) |
+| `PRESSED_OFF` | Button Pressed Off (Regular Off) |
+| `DOUBLE_PRESSED_ON` | Button Double Pressed On (Fast On) |
+| `DOUBLE_PRESSED_OFF` | Button Double Pressed Off (Fast Off) |
+| `HELD_UP` | Button Held Up (Manual Change Up) |
+| `HELD_DOWN` | Button Held Down (Manual Change Down) |
+| `RELEASED` | Button Released (Manual Change Stop) |
 
 ## Full Example
 
@@ -196,30 +223,13 @@ Sample things file:
 
 ```
 Bridge insteon:network:home [port="/dev/ttyUSB0"] {
-  Thing device 22F8A8 [address="22.F8.A8", productKey="F00.00.15"] {
-    Channels:
-      Type switch : keypadButtonA [ group=3 ]
-      Type switch : keypadButtonB [ group=4 ]
-      Type switch : keypadButtonC [ group=5 ]
-      Type switch : keypadButtonD [ group=6 ]
-  }
-  Thing device 238D93 [address="23.8D.93", productKey="F00.00.12"]
-  Thing device 238F55 [address="23.8F.55", productKey="F00.00.11"] {
-    Channels:
-      Type dimmer : dimmer [related="23.B0.D9+23.8F.C9"]
-  }
-  Thing device 238FC9 [address="23.8F.C9", productKey="F00.00.11"] {
-    Channels:
-      Type dimmer : dimmer [related="23.8F.55+23.B0.D9"]
-  }
-  Thing device 23B0D9 [address="23.B0.D9", productKey="F00.00.11"] {
-    Channels:
-      Type dimmer : dimmer [related="23.8F.55+23.8F.C9"]
-  }
-  Thing device 243141 [address="24.31.41", productKey="F00.00.11"]  {
-    Channels:
-      Type dimmer : dimmer [dimmermax=60]
-  }
+  Thing device 22F8A8 [address="22.F8.A8", devCat="0x01" subCat="0x42"]
+  Thing device 238D93 [address="23.8D.93", devCat="0x02" subCat="0x0D"]
+  Thing device 238F55 [address="23.8F.55", devCat="0x01" subCat="0x1F"]
+  Thing device 238FC9 [address="23.8F.C9", productKey="0x00006B"]
+  Thing device 23B0D9 [address="23.B0.D9"]
+  Thing scene scene42 [group=42]
+  Thing x10 A2 [houseCode="A", unitCode=2, deviceType="X10_Switch"]
 }
 ```
 
@@ -230,12 +240,13 @@ Switch switch1 { channel="insteon:device:home:243141:switch" }
 Dimmer dimmer1 { channel="insteon:device:home:238F55:dimmer" }
 Dimmer dimmer2 { channel="insteon:device:home:23B0D9:dimmer" }
 Dimmer dimmer3 { channel="insteon:device:home:238FC9:dimmer" }
-Dimmer keypad  { channel="insteon:device:home:22F8A8:loadDimmer" }
-Switch keypadA { channel="insteon:device:home:22F8A8:keypadButtonA" }
-Switch keypadB { channel="insteon:device:home:22F8A8:keypadButtonB" }
-Switch keypadC { channel="insteon:device:home:22F8A8:keypadButtonC" }
-Switch keypadD { channel="insteon:device:home:22F8A8:keypadButtonD" }
-Dimmer dimmer  { channel="insteon:device:home:238D93:dimmer" }
+Dimmer keypad  { channel="insteon:device:home:22F8A8:dimmer" }
+Switch keypadA { channel="insteon:device:home:22F8A8:buttonA" }
+Switch keypadB { channel="insteon:device:home:22F8A8:buttonB" }
+Switch keypadC { channel="insteon:device:home:22F8A8:buttonC" }
+Switch keypadD { channel="insteon:device:home:22F8A8:buttonD" }
+Switch scene42 { channel="insteon:scene:home:scene42:broadcastOnOff" }
+Switch switch2 { channel="insteon:x10:home:A2:switch" }
 ```
 
 ## Console Commands
@@ -245,10 +256,13 @@ Enter `smarthome:insteon` in the console and you will get a list of available co
 
 ```
 openhab> smarthome:insteon
-Usage: smarthome:insteon display_devices - display devices that are online, along with available channels
-Usage: smarthome:insteon display_channels - display channels that are linked, along with configuration information
-Usage: smarthome:insteon display_local_database - display Insteon PLM or hub database details
+Usage: smarthome:insteon display_devices - display Insteon/X10 devices that are configured, along with available channels and status
+Usage: smarthome:insteon display_channels - display channel ids that are available, along with configuration information and link state
+Usage: smarthome:insteon display_device_database address - display device all-link database records
+Usage: smarthome:insteon display_device_product_data address - display device product data
+Usage: smarthome:insteon display_modem_database - display Insteon PLM or hub database details
 Usage: smarthome:insteon display_monitored - display monitored device(s)
+Usage: smarthome:insteon display_scenes - display Insteon scenes that are configured, along with available channels
 Usage: smarthome:insteon start_monitoring all|address - start displaying messages received from device(s)
 Usage: smarthome:insteon stop_monitoring all|address - stop displaying messages received from device(s)
 Usage: smarthome:insteon send_standard_message address flags cmd1 cmd2 - send standard message to a device
@@ -256,7 +270,7 @@ Usage: smarthome:insteon send_extended_message address flags cmd1 cmd2 [up to 13
 Usage: smarthome:insteon send_extended_message_2 address flags cmd1 cmd2 [up to 12 bytes] - send extended message with a two byte crc to a device
 ```
 
-Here is an example of command: `smarthome:insteon display_local_database`.
+Here is an example of command: `smarthome:insteon display_modem_database`.
 
 When monitoring devices, the output will be displayed where openHAB was started.
 You may need to redirect the output to a log file to see the messages.
@@ -269,8 +283,6 @@ How do Insteon devices tell other devices on the network that their state has ch
 All devices (called *responders*) that are configured to listen to this message will then go into a pre-defined state.
 For instance when light switch A is switched to "ON", it will send out a message to group #1, and all responders will react to it, e.g they may go into the "ON" position as well.
 Since more than one device can participate, the sending out of the broadcast message and the subsequent state change of the responders is referred to as "triggering a scene".
-At the device and PLM level, the concept of a "scene" does not exist, so you will find it notably absent in the binding code and this document.
-A scene is strictly a higher level concept, introduced to shield the user from the details of how the communication is implemented.
 
 Many Insteon devices send out messages on different group numbers, depending on what happens to them.
 A leak sensor may send out a message on group #1 when dry, and on group #2 when wet.
@@ -297,8 +309,8 @@ Since Insteon devices can have multiple features (for instance a switchable rela
 For example, the following lines would create two Number items referring to the same thermostat device, but to different features of it:
 
 ```
-Number  thermostatCoolPoint "cool point [%.1f °F]" { channel="insteon:device:home:32F422:coolSetPoint" }
-Number  thermostatHeatPoint "heat point [%.1f °F]" { channel="insteon:device:home:32F422:heatSetPoint" }
+Number:Temperature  thermostatCoolPoint "cool point [%.1f °F]" { channel="insteon:device:home:32F422:coolSetPoint" }
+Number:Temperature  thermostatHeatPoint "heat point [%.1f °F]" { channel="insteon:device:home:32F422:heatSetPoint" }
 ```
 
 ### Simple Light Switches
@@ -317,34 +329,7 @@ Here is how to configure a simple dimmer (2477D) in the .items file:
 Dimmer kitchenChandelier "kitchen chandelier" { channel="insteon:device:home:AABBCC:dimmer" }
 ```
 
-Dimmers can be configured with a maximum level when turning a device on or setting a percentage level.
-If a maximum level is configured, openHAB will never set the level of the dimmer above the level specified.
-The parameter dimmermax must be defined for the channel.
-The below example sets a maximum level of 70% for dim 1 and 60% for dim 2:
-
-**Things**
-
-```
-Bridge insteon:network:home [port="/dev/ttyUSB0"] {
-  Thing device AABBCC [address="AA.BB.CC", productKey="F00.00.11"]  {
-    Channels:
-      Type dimmer : dimmer [dimmermax=70]
-  }
-  Thing device AABBCD [address="AA.BB.CD", productKey="F00.00.15"]  {
-    Channels:
-      Type dimmer : loadDimmer [dimmermax=60]
-  }
-}
-```
-
-**Items**
-
-```
-Dimmer d1 "dimmer 1" { channel="insteon:device:home:AABBCC:dimmer"}
-Dimmer d2 "dimmer 2" { channel="insteon:device:home:AABBCD:loadDimmer"}
-```
-
-Setting a maximum level does not affect manual turning on or dimming a switch.
+For *ON* command requests, the binding uses the device local on level setting to set the dimmer level, the same way it would be set when physically pressing on the dimmer.
 
 ### On/Off Outlets
 
@@ -356,7 +341,7 @@ Switch fOutBot "Front Outlet Bottom" <socket> { channel="insteon:device:home:AAB
 ```
 
 This will give you individual control of each outlet.
-    
+
 ### Mini Remotes
 
 Link the mini remote to be a controller of the modem by using the set button.
@@ -371,28 +356,18 @@ The modem's link database (see [Insteon Terminal](https://github.com/pfrommerd/i
     0000 xx.xx.xx                       xx.xx.xx  RESP  10100010 group: 04 data: 02 2c 41
 ```
 
-**Items**
-This goes into the items file:
+The mini remote buttons cannot be modeled as items since they don't have a state or can receive commands. However, you can monitor button triggered events through rules that can set off subsequent actions:
+
+**Rules**
 
 ```
-    Switch miniRemoteButtonA "mini remote button a" { channel="insteon:device:home:AABBCC:buttonA", autoupdate="false" }
-    Switch miniRemoteButtonB "mini remote button b" { channel="insteon:device:home:AABBCC:buttonB", autoupdate="false" }
-    Switch miniRemoteButtonC "mini remote button c" { channel="insteon:device:home:AABBCC:buttonC", autoupdate="false" }
-    Switch miniRemoteButtonD "mini remote button d" { channel="insteon:device:home:AABBCC:buttonD", autoupdate="false" }
+rule "Mini Remote Button A Pressed On"
+when
+  Channel 'insteon:device:home:miniRemote:eventButtonA' triggered PRESSED_ON
+then
+  // do something
+end
 ```
-
-**Sitemap**
-This goes into the sitemap file:
-
-```
-    Switch item=miniRemoteButtonA label="mini remote button a" mappings=[ OFF="Off", ON="On"]
-    Switch item=miniRemoteButtonB label="mini remote button b" mappings=[ OFF="Off", ON="On"]
-    Switch item=miniRemoteButtonC label="mini remote button c" mappings=[ OFF="Off", ON="On"]
-    Switch item=miniRemoteButtonD label="mini remote button d" mappings=[ OFF="Off", ON="On"]
-```
-
-The switches in the GUI just display the mini remote's most recent button presses.
-They are not operable because the PLM cannot trigger the mini remotes scenes.
 
 ### Motion Sensors
 
@@ -403,30 +378,25 @@ Then create entries in the .items file like this:
 **Items**
 
 ```
-    Contact motionSensor             "motion sensor [MAP(contact.map):%s]" { channel="insteon:device:home:AABBCC:contact"}
-    Number  motionSensorBatteryLevel "motion sensor battery level"         { channel="insteon:device:home:AABBCC:batteryLevel" }
-    Number  motionSensorLightLevel   "motion sensor light level"           { channel="insteon:device:home:AABBCC:lightLevel" }
+    Contact              motionSensor             "motion sensor [MAP(contact.map):%s]"   { channel="insteon:device:home:AABBCC:contact"}
+    Number:Dimensionless motionSensorBatteryLevel "motion sensor battery level [%.1f %%]" { channel="insteon:device:home:AABBCC:batteryLevel" }
+    Number:Dimensionless motionSensorLightLevel   "motion sensor light level [%.1f %%]"   { channel="insteon:device:home:AABBCC:lightLevel" }
 ```
 
 This will give you a contact, the battery level, and the light level.
 Note that battery and light level are only updated when either there is motion, light level above/below threshold, tamper switch activated, or the sensor battery runs low.
 
-The motion sensor II includes three additional channels:
+The motion sensor II includes additional channels:
 
 **Items**
 
 ```
-    Number  motionSensorBatteryPercent     "motion sensor battery percent"                     { channel="insteon:device:home:AABBCC:batteryPercent" }
     Contact motionSensorTamperSwitch       "motion sensor tamper switch [MAP(contact.map):%s]" { channel="insteon:device:home:AABBCC:tamperSwitch"}
     Number  motionSensorTemperatureLevel   "motion sensor temperature level"                   { channel="insteon:device:home:AABBCC:temperatureLevel" }
 ```
 
-The temperature can be calculated in Fahrenheit using the following formulas:
-
-* If the device is battery powered: `temperature = 0.73 * motionSensorTemperatureLevel - 20.53`
-* If the device is USB powered: `temperature = 0.72 * motionSensorTemperatureLevel - 24.61`
-
-Since the motion sensor II might not be calibrated correctly, the values `20.53` and `24.61` can be adjusted as necessary to produce the correct temperature.
+The temperature is automatically calculated in Fahrenheit based on the motion sensor II powered source.
+Since that sensor might not be calibrated correctly, the output temperature may need to be offset on the openHAB side.
 
 ### Hidden Door Sensors
 
@@ -441,11 +411,12 @@ Create a contact.map file in the transforms directory like the following:
 ```
 
 **Items**
+
 Then create entries in the .items file like this:
 
 ```
-    Contact doorSensor             "Door sensor [MAP(contact.map):%s]" { channel="insteon:device:home:AABBCC:contact" }
-    Number  doorSensorBatteryLevel "Door sensor battery level [%.1f]"  { channel="insteon:device:home:AABBCC:batteryLevel" }
+    Contact              doorSensor             "Door sensor [MAP(contact.map):%s]"   { channel="insteon:device:home:AABBCC:contact" }
+    Number:Dimensionless doorSensorBatteryLevel "Door sensor battery level [%.1f %%]" { channel="insteon:device:home:AABBCC:batteryLevel" }
 ```
 
 This will give you a contact and the battery level.
@@ -456,13 +427,14 @@ Note that battery level is only updated when either there is motion, or the sens
 Read the instructions very carefully: sync with lock within 5 feet to avoid bad connection, link twice for both ON and OFF functionality.
 
 **Items**
+
 Put something like this into your .items file:
 
 ```
     Switch doorLock "Front Door [MAP(lock.map):%s]"  { channel="insteon:device:home:AABBCC:switch" }
 ```
 
-and create a file "lock.map" in the transforms directory with these entries: 
+and create a file "lock.map" in the transforms directory with these entries:
 
 ```
     ON=Lock
@@ -484,6 +456,7 @@ Add this map into your transforms directory as "contact.map":
 ```
 
 **Items**
+
 Along with this into your .items file:
 
 ```
@@ -492,6 +465,7 @@ Along with this into your .items file:
 ```
 
 **Sitemap**
+
 To make it visible in the GUI, put this into your sitemap file:
 
 ```
@@ -510,7 +484,7 @@ Please see the Insteon I/O Linc documentation for further details.
 Before you attempt to configure the keypads, please familiarize yourself with the concept of an Insteon group.
 
 The Insteon keypad devices typically control one main load and have a number of buttons that will send out group broadcast messages to trigger a scene.
-If you just want to use the main load switch within openhab just link modem and device with the set buttons as usual, no complicated linking is necessary.
+If you just want to use the main load switch within openHAB just link modem and device with the set buttons as usual, no complicated linking is necessary.
 But if you want to get the buttons to work, read on.
 
 Each button will send out a message for a different, predefined group.
@@ -530,54 +504,35 @@ This means you must configure the modem as a responder to group #3 (and #4, #5, 
 For instructions how to do this, check out the [Insteon Terminal](https://github.com/pfrommerd/insteon-terminal.
 You can even do that with the set buttons (see instructions that come with the keypad).
 
-While capturing the messages that the buttons emit is pretty straight forward, controlling the buttons is  another matter.
-They cannot be simply toggled with a direct command to the device, but instead a broadcast message must be sent on a group number that the button has been programmed to listen to.
-This means you need to pick a set of unused groups that is globally unique (if you have multiple keypads, each one of them has to use different groups), one group for each button.
+To accomplish this, you need to pick a set of unused groups that is globally unique (if you have multiple keypads, each one of them has to use different groups), one group for each button.
 The example configuration below uses groups 0xf3, 0xf4, 0xf5, and 0xf6.
 Then link the buttons such that they respond to those groups, and link the modem as a controller for them (see [Insteon Terminal](https://github.com/pfrommerd/insteon-terminal) documentation.
-In your items file you specify these groups with the "group=" parameters such that the binding knows what group number to put on the outgoing message.
+In your items file you specify these groups with the *group* parameters such that the binding knows what group number to put on the outgoing message.
 
+While previously, keypad buttons required a *group* channel parameter to be setup, the binding can now automatically determine these broadcast groups, based on the relevant device link database, if a valid *group* parameter is not configured.
+And it will fallback to just switching the led button on/off when the group cannot be determined because of no links in database for that component defined or no *group* parameter configured.
+To force the fallback mechanism on a given button, the *ledOnly* channel parameter set to *true* should be used.
+The led button on/off switching supports any keypad local device radio group settings, updating all led buttons related to the requested button.
+Additionally, any keypad button toggle mode set to always on will only process *ON* commands, in line with the physical interaction.
 
 #### Keypad Switches
 
 **Items**
 
-Here is a simple example, just using the load (main) switch:
+Here is an example, using a keypad load (main) switch and associated buttons:
 
 ```
-    Switch keypadSwitch             "main load"          { channel="insteon:device:home:AABBCC:loadSwitch" }
-    Number keypadSwitchManualChange "main manual change" { channel="insteon:device:home:AABBCC:loadSwitchManualChange" }
-    Switch keypadSwitchFastOnOff    "main fast on/off"   { channel="insteon:device:home:AABBCC:loadSwitchFastOnOff" }
+    Switch keypadSwitch             "main switch"        { channel="insteon:device:home:AABBCC:switch" }
+    String keypadSwitchManualChange "main manual change" { channel="insteon:device:home:AABBCC:manualChange" }
+    Switch keypadSwitchFastOnOff    "main fast on/off"   { channel="insteon:device:home:AABBCC:fastOnOff" }
+    Switch keypadSwitchA            "button A"           { channel="insteon:device:home:AABBCC:buttonA"}
+    Switch keypadSwitchB            "button B"           { channel="insteon:device:home:AABBCC:buttonB"}
+    Switch keypadSwitchC            "button C"           { channel="insteon:device:home:AABBCC:buttonC"}
+    Switch keypadSwitchD            "button D"           { channel="insteon:device:home:AABBCC:buttonD"}
 ```
 
-Most people will not use the fast on/off features or the manual change feature, so you really only need the first line.
-To make the buttons available, add the following:
 
-**Things**
-
-```
-Bridge insteon:network:home [port="/dev/ttyUSB0"] {
-  Thing device AABBCC [address="AA.BB.CC", productKey="F00.00.15"] {
-    Channels:
-      Type switch : keypadButtonA [ group="0xf3" ]
-      Type switch : keypadButtonB [ group="0xf4" ]
-      Type switch : keypadButtonC [ group="0xf5" ]
-      Type switch : keypadButtonD [ group="0xf6" ]
-  }
-}
-```
-
-The value after group must either be a number or string.
-The hexadecimal value 0xf3 can either converted to a numeric value 243 or the string value "0xf3".
-
-**Items**
-
-```
-    Switch keypadSwitchA "keypad button A" { channel="insteon:device:home:AABBCC:keypadButtonA"}
-    Switch keypadSwitchB "keypad button B" { channel="insteon:device:home:AABBCC:keypadButtonB"}
-    Switch keypadSwitchC "keypad button C" { channel="insteon:device:home:AABBCC:keypadButtonC"}
-    Switch keypadSwitchD "keypad button D" { channel="insteon:device:home:AABBCC:keypadButtonD"}
-```
+Most people will not use the fast on/off features or the manual change feature, unless you want to send commands to control these features.
 
 **Sitemap**
 
@@ -586,13 +541,48 @@ The following sitemap will bring the items to life in the GUI:
 ```
     Frame label="Keypad" {
           Switch item=keypadSwitch label="main"
-          Switch item=keypadSwitchFastOnOff label="fast on/off"
-          Switch item=keypadSwitchManualChange label="manual change" mappings=[ 0="DOWN", 1="STOP",  2="UP"]
+          Switch item=keypadSwitchFastOnOff label="fast on/off" mappings=[ON="FAST ON", OFF="FAST OFF"]
+          Switch item=keypadSwitchManualChange label="manual change" mappings=[BRIGHTEN="BRIGHTEN", DIM="DIM", STOP="STOP"]
           Switch item=keypadSwitchA label="button A"
           Switch item=keypadSwitchB label="button B"
           Switch item=keypadSwitchC label="button C"
           Switch item=keypadSwitchD label="button D"
     }
+```
+
+**Rules**
+
+The following rules will monitor regular on/off, fast on/off and manual change button events:
+
+```
+rule "Main Button Off Event"
+when
+  Channel 'insteon:device:home:AABBCC:eventButtonMain' triggered PRESSED_OFF
+then
+  // do something
+end
+
+rule "Main Button Fast On/Off Events"
+when
+  Channel 'insteon:device:home:AABBCC:eventButtonMain' triggered DOUBLE_PRESSED_ON or
+  Channel 'insteon:device:home:AABBCC:eventButtonMain' triggered DOUBLE_PRESSED_OFF
+then
+  // do something
+end
+
+rule "Main Button Manual Change Stop Event"
+when
+  Channel 'insteon:device:home:AABBCC:eventButtonMain' triggered RELEASED
+then
+  // do something
+end
+
+rule "Keypad Button A On Event"
+when
+  Channel 'insteon:device:home:AABBCC:eventButtonA' triggered PRESSED_ON
+then
+  // do something
+end
 ```
 
 #### Keypad Dimmers
@@ -602,8 +592,8 @@ The keypad dimmers are like keypad switches, except that the main load is dimmab
 **Items**
 
 ```
-    Dimmer keypadDimmer           "dimmer"                          { channel="insteon:device:home:AABBCC:loadDimmer" }
-    Switch keypadDimmerButtonA    "keypad dimmer button A [%d %%]"  { channel="insteon:device:home:AABBCC:keypadButtonA" }
+    Dimmer keypadDimmer           "dimmer"                          { channel="insteon:device:home:AABBCC:dimmer" }
+    Switch keypadDimmerButtonA    "keypad dimmer button A [%d %%]"  { channel="insteon:device:home:AABBCC:buttonA" }
 ```
 
 **Sitemap**
@@ -629,25 +619,25 @@ Again, refer to the [Insteon Terminal](https://github.com/pfrommerd/insteon-term
 This is an example of what to put into your .items file:
 
 ```
-    Number  thermostatCoolPoint   "cool point [%.1f °F]"  { channel="insteon:device:home:AABBCC:coolSetPoint" }
-    Number  thermostatHeatPoint   "heat point [%.1f °F]"  { channel="insteon:device:home:AABBCC:heatSetPoint" }
-    Number  thermostatSystemMode  "system mode [%d]"      { channel="insteon:device:home:AABBCC:systemMode" }
-    Number  thermostatFanMode     "fan mode [%d]"         { channel="insteon:device:home:AABBCC:fanMode" }
-    Number  thermostatIsHeating   "is heating [%d]"       { channel="insteon:device:home:AABBCC:isHeating"}
-    Number  thermostatIsCooling   "is cooling [%d]"       { channel="insteon:device:home:AABBCC:isCooling" }
-    Number  thermostatTempFahren  "temperature [%.1f °F]" { channel="insteon:device:home:AABBCC:tempFahrenheit" }
-    Number  thermostatTempCelsius "temperature [%.1f °C]" { channel="insteon:device:home:AABBCC:tempCelsius" }
-    Number  thermostatHumidity    "humidity [%.0f %%]"    { channel="insteon:device:home:AABBCC:humidity" }
+    Number:Temperature   thermostatCoolPoint   "cool point [%.1f °F]"  { channel="insteon:device:home:AABBCC:coolSetPoint" }
+    Number:Temperature   thermostatHeatPoint   "heat point [%.1f °F]"  { channel="insteon:device:home:AABBCC:heatSetPoint" }
+    String               thermostatSystemMode  "system mode [%s]"      { channel="insteon:device:home:AABBCC:systemMode" }
+    String               thermostatSystemState "system state [%s]"     { channel="insteon:device:home:AABBCC:systemState" }
+    String               thermostatFanMode     "fan mode [%s]"         { channel="insteon:device:home:AABBCC:fanMode" }
+    Number:Temperature   thermostatTemperature "temperature [%.1f °F]" { channel="insteon:device:home:AABBCC:tempFahrenheit" }
+    Number:Dimensionless thermostatHumidity    "humidity [%.0f %%]"    { channel="insteon:device:home:AABBCC:humidity" }
 ```
 
 Add this as well for some more exotic features:
 
 ```
-    Number  thermostatACDelay      "A/C delay [%d min]"        { channel="insteon:device:home:AABBCC:acDelay" }
-    Number  thermostatBacklight    "backlight [%d sec]"        { channel="insteon:device:home:AABBCC:backlightDuration" }
-    Number  thermostatStage1       "A/C stage 1 time [%d min]" { channel="insteon:device:home:AABBCC:stage1Duration" }
-    Number  thermostatHumidityHigh "humidity high [%d %%]"     { channel="insteon:device:home:AABBCC:humidityHigh" }
-    Number  thermostatHumidityLow  "humidity low [%d %%]"      { channel="insteon:device:home:AABBCC:humidityLow" }
+    Number:Time          thermostatACDelay      "A/C delay [%d min]"        { channel="insteon:device:home:AABBCC:acDelay" }
+    Number:Time          thermostatBacklight    "backlight [%d sec]"        { channel="insteon:device:home:AABBCC:backlightDuration" }
+    Number:Time          thermostatStage1       "A/C stage 1 time [%d min]" { channel="insteon:device:home:AABBCC:stage1Duration" }
+    Number:Dimensionless thermostatHumidityHigh "humidity high [%d %%]"     { channel="insteon:device:home:AABBCC:humidityHigh" }
+    Number:Dimensionless thermostatHumidityLow  "humidity low [%d %%]"      { channel="insteon:device:home:AABBCC:humidityLow" }
+    String               thermostatTempFormat   "temperature format [%s]"   { channel="insteon:device:home:AABBCC:temperatureFormat" }
+    String               thermostatTimeFormat   "time format [%s]"          { channel="insteon:device:home:AABBCC:timeFormat" }
 ```
 
 **Sitemap**
@@ -655,20 +645,19 @@ Add this as well for some more exotic features:
 For the thermostat to display in the GUI, add this to the sitemap file:
 
 ```
-    Text   item=thermostatTempCelsius icon="temperature"
-    Text   item=thermostatTempFahren icon="temperature"
-    Text   item=thermostatHumidity
+    Text     item=thermostatTemperature icon="temperature"
+    Text     item=thermostatHumidity
     Setpoint item=thermostatCoolPoint icon="temperature" minValue=63 maxValue=90 step=1
     Setpoint item=thermostatHeatPoint icon="temperature" minValue=50 maxValue=80 step=1
-    Switch item=thermostatSystemMode  label="system mode" mappings=[ 0="OFF",  1="HEAT", 2="COOL", 3="AUTO", 4="PROGRAM"]
-    Switch item=thermostatFanMode  label="fan mode" mappings=[ 0="AUTO",  1="ALWAYS ON"]
-    Switch item=thermostatIsHeating  label="is heating" mappings=[ 0="OFF",  1="HEATING"]
-    Switch item=thermostatIsCooling  label="is cooling" mappings=[ 0="OFF",  1="COOLING"]
-    Setpoint item=thermostatACDelay  minValue=2 maxValue=20 step=1
-    Setpoint item=thermostatBacklight  minValue=0 maxValue=100 step=1
-    Setpoint item=thermostatHumidityHigh  minValue=0 maxValue=100 step=1
-    Setpoint item=thermostatHumidityLow   minValue=0 maxValue=100 step=1
-    Setpoint item=thermostatStage1  minValue=1 maxValue=60 step=1
+    Switch   item=thermostatSystemMode mappings=[ OFF="OFF", HEAT="HEAT", COOL="COOL", AUTO="AUTO", PROGRAM="PROGRAM" ]
+    Text     item=thermostatSystemState
+    Switch   item=thermostatFanMode mappings=[ AUTO="AUTO", ON="ALWAYS ON" ]
+    Setpoint item=thermostatACDelay minValue=2 maxValue=20 step=1
+    Setpoint item=thermostatBacklight minValue=0 maxValue=100 step=1
+    Setpoint item=thermostatHumidityHigh minValue=0 maxValue=100 step=1
+    Setpoint item=thermostatHumidityLow  minValue=0 maxValue=100 step=1
+    Setpoint item=thermostatStage1 minValue=1 maxValue=60 step=1
+    Switch   item=thermostatTempFormat mappings=[ CELSIUS="CELSIUS", FAHRENHEIT="FAHRENHEIT" ]
 ```
 
 ### Power Meters
@@ -679,11 +668,11 @@ See the example below:
 
 **Items**
 
-``` 
-    Number:Power  iMeterWatts   "iMeter [%d watts]"   { channel="insteon:device:home:AABBCC:watts" }
-    Number:Energy iMeterKwh     "iMeter [%.04f kWh]"  { channel="insteon:device:home:AABBCC:kWh" }
-    Switch        iMeterUpdate  "iMeter Update"       { channel="insteon:device:home:AABBCC:update" }
-    Switch        iMeterReset   "iMeter Reset"        { channel="insteon:device:home:AABBCC:reset" }
+```
+    Number:Power  iMeterWatts   "iMeter [%d W]"      { channel="insteon:device:home:AABBCC:watts" }
+    Number:Energy iMeterKwh     "iMeter [%.04f kWh]" { channel="insteon:device:home:AABBCC:kWh" }
+    Switch        iMeterUpdate  "iMeter Update"      { channel="insteon:device:home:AABBCC:update" }
+    Switch        iMeterReset   "iMeter Reset"       { channel="insteon:device:home:AABBCC:reset" }
 ```
 
 ### Fan Controllers
@@ -694,46 +683,40 @@ Here is an example configuration for a FanLinc module, which has a dimmable ligh
 
 ```
     Dimmer fanLincDimmer "fanlinc dimmer [%d %%]" { channel="insteon:device:home:AABBCC:lightDimmer" }
-    Number fanLincFan    "fanlinc fan"            { channel="insteon:device:home:AABBCC:fan"}
+    String fanLincFan    "fanlinc fan"            { channel="insteon:device:home:AABBCC:fanSpeed" }
 ```
 
 **Sitemap**
 
 ```
     Slider item=fanLincDimmer switchSupport
-    Switch item=fanLincFan label="fan speed" mappings=[ 0="OFF",  1="LOW", 2="MEDIUM", 3="HIGH"]
+    Switch item=fanLincFan label="fan speed" mappings=[ OFF="OFF", LOW="LOW", MEDIUM="MEDIUM", HIGH="HIGH"]
 ```
+
+## Battery Powered Devices
+
+Battery powered devices (mostly sensors) work differently than standard wired one.
+To conserve battery, these devices are only pollable when there are awake.
+Typically they send a heartbeat every 24 hours. When the binding receive a message from one of these devices, it polls additional information needed during the awake period (about 4 seconds).
+Some wireless devices have a `stayAwake` channel that can extend the period to 4 minutes but at the cost of using more battery. It shouldn't be in most cases except during initial device configuration.
+Same goes with commands, the binding will queue up commands requested on these devices and send them during the awake time window.
+Only one command per channel is queued, this mean that the subsequent requests will overwrite the previous ones.
 
 ### X10 Devices
 
-It is worth noting that both the Inseon PLM and the 2014 Hub can both command X10 devices over the powerline, and also set switch stats based on X10 signals received over the powerline.
-This allows openHAB not only control X10 devices without the need for other hardwaare, but it can also have rules that react to incoming X10 powerline commands.
+It is worth noting that both the Insteon PLM and the 2014 Hub can both command X10 devices over the powerline, and also set switch stats based on X10 signals received over the powerline.
+This allows openHAB not only control X10 devices without the need for other hardware, but it can also have rules that react to incoming X10 powerline commands.
 While you cannot bind the the X10 devices to the Insteon PLM/HUB, here are some examples for configuring X10 devices.
 Be aware that most X10 switches/dimmers send no status updates, i.e. openHAB will not learn about switches that are toggled manually.
 Further note that X10 devices are addressed with `houseCode.unitCode`, e.g. `A.2`.
-
-**Items**
-
-```
-    Switch x10Switch  "X10 switch" { channel="insteon:device:home:AABB:switch" }
-    Dimmer x10Dimmer  "X10 dimmer" { channel="insteon:device:home:AABB:dimmer" }
-    Contact x10Motion "X10 motion" { channel="insteon:device:home:AABB:contact" }
-```
-
-## Direct Sending of Group Broadcasts (Triggering Scenes)
-
-The binding can command the modem to send broadcasts to a given Insteon group.
-Since it is a broadcast message, the corresponding item does *not* take the address of any device, but of the modem itself.
-The format is broadcastOnOff#X where X is the group that you want to be able to broadcast messages to:
 
 **Things**
 
 ```
 Bridge insteon:network:home [port="/dev/ttyUSB0"] {
-  Thing device AABBCC             [address="AA.BB.CC", productKey="0x000045"] {
-    Channels:
-      Type switch : broadcastOnOff#2
-  }
+  Thing x10 A2 [houseCode="A", unitCode=2, deviceType="X10_Switch"]
+  Thing x10 B4 [houseCode="B", unitCode=4, deviceType="X10_Dimmer"]
+  Thing x10 C6 [houseCode="C", unitCode=6, deviceType="X10_Sensor"]
 }
 
 ```
@@ -741,48 +724,74 @@ Bridge insteon:network:home [port="/dev/ttyUSB0"] {
 **Items**
 
 ```
-    Switch  broadcastOnOff "group on/off"  { channel="insteon:device:home:AABBCC:broadcastOnOff#2" }
+    Switch  x10Switch "X10 switch" { channel="insteon:x10:home:A2:switch" }
+    Dimmer  x10Dimmer "X10 dimmer" { channel="insteon:x10:home:B4:dimmer" }
+    Contact x10Motion "X10 motion" { channel="insteon:x10:home:C6:contact" }
 ```
 
-Flipping this switch to "ON" will cause the modem to send a broadcast message with group=2, and all devices that are configured to respond to it should react.
+## Scenes
 
-## Channel "related" Property
+The binding can trigger scenes by commanding the modem to send broadcasts to a given Insteon group.
+
+**Things**
+
+```
+Bridge insteon:network:home [port="/dev/ttyUSB0"] {
+  Thing scene scene42 [group=42]
+}
+
+```
+
+**Items**
+
+```
+    Switch scene "scene" { channel="insteon:scene:home:scene42:broadcastOnOff" }
+```
+
+Flipping this switch to "ON" will cause the modem to send a broadcast message with group=42, and all devices that are configured to respond to it should react.
+Because scenes are stateless, the scene item will not receive any state updates and should be used as write only.
+
+## Related Devices
 
 When an Insteon device changes its state because it is directly operated (for example by flipping a switch manually), it sends out a broadcast message to announce the state change, and the binding (if the PLM modem is properly linked as a responder) should update the corresponding openHAB items.
 Other linked devices however may also change their state in response, but those devices will *not* send out a broadcast message, and so openHAB will not learn about their state change until the next poll.
 One common scenario is e.g. a switch in a 3-way configuration, with one switch controlling the load, and the other switch being linked as a controller.
-In this scenario, the "related" keyword can be used to have the binding poll a related device whenever a state change occurs for another device.
-A typical example would be two dimmers (A and B) in a 3-way configuration:
+In this scenario, when the binding receives a broadcast message from one of these devices indicating a state change, it will poll the other related devices shortly after, instead of waiting until the next scheduled device poll which can take minutes.
+It is important to note, that the binding will now automatically determine related devices, based on relevant device link database, deprecating the *related* channel parameter.
+For scenes, the related devices will be polled, based on the modem database, after sending a group broadcast message.
+
+## Triggered Events
+
+In order to monitor if an Insteon device button was directly operated and the type of interaction, triggered event channels can be used.
+These channels have the sole purpose to be used in rules in order to set off subsequent actions based on these events.
+Below are examples, including all available events, of a dimmer button and a keypad button:
 
 ```
-Bridge insteon:network:home [port="/dev/ttyUSB0"] {
-  Thing device AABBCC [address="AA.BB.CC", productKey="F00.00.11"] {
-    Channels:
-      Type dimmer : dimmer [related="AA.BB.DD"]
+rule "Dimmer Paddle Events"
+when
+  Channel 'insteon:device:home:dimmer:eventButton' triggered
+then
+  switch receivedEvent {
+    case PRESSED_ON:         // do something (regular on)
+    case PRESSED_OFF:        // do something (regular off)
+    case DOUBLE_PRESSED_ON:  // do something (fast on)
+    case DOUBLE_PRESSED_OFF: // do something (fast off)
+    case HELD_UP:            // do something (manual change up)
+    case HELD_DOWN:          // do something (manual change down)
+    case RELEASED:           // do something (manual change stop)
   }
-  Thing device AABBDD [address="AA.BB.DD", productKey="F00.00.11"] {
-    Channels:
-      Type dimmer : dimmer [related="AA.BB.CC"]
-  }
-}
+end
+
+rule "Keypad Button A Pressed Off"
+when
+  Channel 'insteon:device:home:keypad:eventButtonA' triggered PRESSED_OFF
+then
+  // do something
+end
 ```
 
-Another scenario is a group broadcast message, the binding doesn't know which devices have responded to the message since its a broadcast message.
-In this scenario, the "related" keyword can be used to have the binding poll one or more related device when group message are sent.
-A typical example would be a switch configured to broadcast to a group, and one or more devices configured to respond to the message:
-
-```
-Bridge insteon:network:home [port="/dev/ttyUSB0"] {
-  Thing device AABBCC             [address="A.BB.CC", productKey="0x000045"] {
-    Channels:
-      Type switch : broadcastOnOff#3 [related="AA.BB.DD"]
-  }
-  Thing device AABBDD [address="AA.BB.DD", productKey="F00.00.11"]
-}
-```
-
-More than one device can be polled by separating them with "+" sign, e.g. "related=aa.bb.cc+xx.yy.zz" would poll both of these devices.
-The implemenation of the *related* keyword is simple: if you add it to a channel, and that channel changes its state, then the *related* device will be polled to see if its state has updated.
+If you previously used `fastOnOff` and `manualChange` channels to monitor these events, make sure to update your rules to use the event channels instead.
+These channels are now write only and therefore no longer provide state updates.
 
 ## Troubleshooting
 
@@ -792,7 +801,7 @@ See [logging in openHAB](https://www.openhab.org/docs/administration/logging.htm
 ### Device Permissions / Linux Device Locks
 
 When openHAB is running as a non-root user (Linux/OSX) it is important to ensure it has write access not just to the PLM device, but to the os lock directory.
-Under openSUSE this is `/run/lock` and is managed by the **lock** group. 
+Under openSUSE this is `/run/lock` and is managed by the **lock** group.
 
 Example commands to grant openHAB access (adjust for your distribution):
 
@@ -803,51 +812,86 @@ usermod -a -G lock openhab
 
 Insufficient access to the lock directory will result in openHAB failing to access the device, even if the device itself is writable.
 
-### Adding New Device Types (Using Existing Device Features)
+### Adding New Device Products
 
-Device types are defined in the file `device_types.xml`, which is inside the Insteon bundle and thus not visible to the user.
-You can however load your own device_types.xml by referencing it in the network config parameters:
+If you can't find a product out of the existing device products (for a complete list see `device_products.xml`) you can add new products by specifying a file (let's call it `my_own_products.xml`) in the network config parameters:
 
-    additionalDevices="/usr/local/openhab/rt/my_own_devices.xml"
+    additionalProducts="/usr/local/openhab/rt/my_own_products.xml"
 
-Where the `my_own_devices.xml` file defines a new device like this:
+In this file you can define your own products, or even overwrite an existing product.
+Each product should have at least a device category and sub category specified. Only use official information or actual data retrieved.
+In the example below product devCat=`0xFF` subCat=`0xFF` is added and modeled as `DimmableLightingControl_LampLinc` device type:
+
+```xml
+  <xml>
+    <product devCat="0xFF" subCat="0xFF">
+  		<description>New Dimmer Device</description>
+  		<model>New Dimmer Model</model>
+  		<device-type>DimmableLightingControl_LampLinc</device-type>
+  	</product>
+  </xml>
+```
+
+### Adding New Device Types
+
+If you can't find a device types out of the existing device types (for a complete list see `device_types.xml`) you can add new device types by specifying a file (e.g. `my_own_devices.xml`) in the network config parameters:
+
+    additionalDeviceTypes="/usr/local/openhab/rt/my_own_devices.xml"
+
+In this file you can define your own device types, or even overwrite an existing device type.
+If adding a new device type, an additional product file will need to be created as well to reference the new type to a product.
+The device type name should be composed of one of the existing device category name and a device sub category name that characterizes the new device type (e.g. `DimmableLightingControl_LampLinc`).
+In the example below device type `DimmableLightingControl_LampLinc` is overwritten, adding a new op flags named `foobar`:
 
 ```xml
     <xml>
-     <device productKey="F00.00.XX">
-      <model>2456-D3</model>
-      <description>LampLinc V2</description>
-      <feature name="dimmer">GenericDimmer</feature>
-      <feature name="lastheardfrom">GenericLastTime</feature>
-     </device>
+      <device-type name="DimmableLightingControl_LampLinc">
+    		<feature name="dimmer">GenericDimmer</feature>
+    		<feature name="fastOnOff">GenericFastOnOff</feature>
+    		<feature name="manualChange">GenericManualChange</feature>
+    		<feature name="rampDimmer">RampDimmer</feature>
+    		<feature name="eventButton">GenericButtonEvent</feature>
+    		<feature name="lastHeardFrom">GenericLastTime</feature>
+    		<feature name="insteonEngine">InsteonEngine</feature>
+    		<feature name="beep">Beep</feature>
+    		<feature-group name="extDataGroup" type="ExtDataGroup">
+    			<feature name="ledBrightness">LEDBrightness</feature>
+    			<feature name="rampRate">RampRate</feature>
+    			<feature name="onLevel">OnLevel</feature>
+    		</feature-group>
+    		<feature-group name="opFlagsGroup" type="OpFlagsGroup">
+    			<feature name="programLock" bit="0" on="0x00" off="0x01">OpFlags</feature>
+    			<feature name="ledTraffic" bit="1" on="0x02" off="0x03">OpFlags</feature>
+    			<feature name="resumeDimLevel" bit="2" on="0x04" off="0x05">OpFlags</feature>
+    			<feature name="ledOnOff" bit="4" on="0x09" off="0x08" inverted="true">OpFlags</feature>
+    			<feature name="loadSense" bit="5" on="0x0A" off="0x0B">OpFlags</feature>
+    			<feature name="foobar" bit="X" on="0xXX" off="0xXX">OpFlags</feature>
+    		</feature-group>
+    	</device-type>
     </xml>
 ```
 
-Finding the Insteon product key can be tricky since Insteon has not updated the product key table (http://www.insteon.com/pdf/insteon_devcats_and_product_keys_20081008.pdf) since 2008.
-If a web search does not turn up the product key, make one up, starting with "F", like: F00.00.99.
-Avoid duplicate keys by finding the highest fake product key in the `device_types.xml` file, and incrementing by one.
-
 ### Adding New Device Features
 
-If you can't can't build a new device out of the existing device features (for a complete list see `device_features.xml`) you can add new features by specifying a file (let's call it `my_own_features.xml`) with the "additionalDevices" option in the network config parameters:
+If you can't find a feature types out of the existing device features (for a complete list see `device_features.xml`) you can add new feature types by specifying a file (let's call it `my_own_features.xml`) in the network config parameters:
 
     additionalFeatures="/usr/local/openhab/rt/my_own_features.xml"
 
-  In this file you can define your own features (or even overwrite an existing feature.
-In the example below a new feature "MyFeature" is defined, which can then be referenced from the `device_types.xml` file (or from `my_own_devices.xml`):
+In this file you can define your own feature types, or even overwrite an existing feature type.
+If adding a new feature type, an additional device type file will need to be created as well to reference the new feature to a device type.
+In the example below a new feature type `MyFeature` is defined:
 
 ```xml
     <xml>
-     <feature name="MyFeature">
-     <message-dispatcher>DefaultDispatcher</message-dispatcher>
-     <message-handler cmd="0x03">NoOpMsgHandler</message-handler>
-     <message-handler cmd="0x06">NoOpMsgHandler</message-handler>
-     <message-handler cmd="0x11">NoOpMsgHandler</message-handler>
-     <message-handler cmd="0x13">NoOpMsgHandler</message-handler>
-     <message-handler cmd="0x19">LightStateSwitchHandler</message-handler>
-     <command-handler command="OnOffType">IOLincOnOffCommandHandler</command-handler>
-     <poll-handler>DefaultPollHandler</poll-handler>
-     </feature>
+      <feature-type name="MyFeature">
+      	<message-dispatcher>DefaultDispatcher</message-dispatcher>
+      	<message-handler command="0x11" group="1">NoOpMsgHandler</message-handler>
+      	<message-handler command="0x13" group="1">NoOpMsgHandler</message-handler>
+      	<message-handler command="0x19">SwitchRequestReplyHandler</message-handler>
+      	<message-handler command="0x2f">NoOpMsgHandler</message-handler>
+      	<command-handler command="OnOffType">SwitchOnOffCommandHandler</command-handler>
+      	<poll-handler ext="0" cmd1="0x19" cmd2="0x00">FlexPollHandler</poll-handler>
+      </feature-type>
     </xml>
 ```
 

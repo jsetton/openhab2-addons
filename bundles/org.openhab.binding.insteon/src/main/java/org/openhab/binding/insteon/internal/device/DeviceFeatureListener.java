@@ -12,7 +12,6 @@
  */
 package org.openhab.binding.insteon.internal.device;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +20,10 @@ import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.eclipse.smarthome.core.library.types.OnOffType;
 import org.eclipse.smarthome.core.library.types.PercentType;
-import org.eclipse.smarthome.core.thing.ChannelUID;
+import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.State;
 import org.openhab.binding.insteon.internal.InsteonBinding;
+import org.openhab.binding.insteon.internal.config.InsteonChannelConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
  * @author Daniel Pfrommer - Initial contribution
  * @author Bernd Pfrommer - openHAB 1 insteonplm binding
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 public class DeviceFeatureListener {
@@ -44,94 +45,58 @@ public class DeviceFeatureListener {
         CHANGED
     };
 
-    private String itemName;
-    private ChannelUID channelUID;
-    private Map<String, @Nullable String> parameters = new HashMap<>();
-    private Map<Class<?>, @Nullable State> state = new HashMap<>();
-    private List<InsteonAddress> relatedDevices = new ArrayList<>();
+    private static final int TIME_DELAY_POLL_RELATED_MSEC = 2000;
+
     private InsteonBinding binding;
-    private static final int TIME_DELAY_POLL_RELATED_MSEC = 5000;
+    private InsteonChannelConfiguration config;
+    private Map<Class<?>, @Nullable State> state = new HashMap<>();
 
     /**
      * Constructor
      *
-     * @param item name of the item that is listening
-     * @param channelUID channel associated with this item
-     * @param eventPublisher the publisher to use for publishing on the openhab bus
+     * @param binding reference to binding
+     * @param config channel config related to this feature listener
      */
-    public DeviceFeatureListener(InsteonBinding binding, ChannelUID channelUID, String item) {
+    public DeviceFeatureListener(InsteonBinding binding, InsteonChannelConfiguration config) {
         this.binding = binding;
-        this.itemName = item;
-        this.channelUID = channelUID;
+        this.config = config;
+        updateChannelConfig();
     }
 
     /**
-     * Gets item name
+     * Gets listener channel name
      *
-     * @return item name
+     * @return name
      */
-    public String getItemName() {
-        return itemName;
+    public String getChannelName() {
+        return config.getChannelName();
     }
 
     /**
-     * Test if string parameter is present and has a given value
+     * Publishes a state change on the openHAB bus
      *
-     * @param key key to match
-     * @param value value to match
-     * @return true if key exists and value matches
-     */
-    private boolean parameterHasValue(String key, String value) {
-        String v = parameters.get(key);
-        return (v != null && v.equals(value));
-    }
-
-    /**
-     * Set parameters for this feature listener
-     *
-     * @param p the parameters to set
-     */
-    public void setParameters(Map<String, @Nullable String> p) {
-        parameters = p;
-        updateRelatedDevices();
-    }
-
-    /**
-     * Publishes a state change on the openhab bus
-     *
-     * @param newState the new state to publish on the openhab bus
+     * @param newState the new state to publish
      * @param changeType whether to always publish or not
      */
     public void stateChanged(State newState, StateChangeType changeType) {
         State oldState = state.get(newState.getClass());
         if (oldState == null) {
-            logger.trace("new state: {}:{}", newState.getClass().getSimpleName(), newState);
+            if (logger.isTraceEnabled()) {
+                logger.trace("new state: {}:{} old state: null", newState.getClass().getSimpleName(), newState);
+            }
             // state has changed, must publish
             publishState(newState);
         } else {
-            logger.trace("old state: {}:{}=?{}", newState.getClass().getSimpleName(), oldState, newState);
+            if (logger.isTraceEnabled()) {
+                logger.trace("new state: {}:{} old state: {}:{}", newState.getClass().getSimpleName(), newState,
+                        oldState.getClass().getSimpleName(), oldState);
+            }
             // only publish if state has changed or it is requested explicitly
             if (changeType == StateChangeType.ALWAYS || !oldState.equals(newState)) {
                 publishState(newState);
             }
         }
         state.put(newState.getClass(), newState);
-    }
-
-    /**
-     * Call this function to inform about a state change for a given
-     * parameter key and value. If dataKey and dataValue don't match,
-     * the state change will be ignored.
-     *
-     * @param state the new state to which the feature has changed
-     * @param changeType how to process the state change (always, or only when changed)
-     * @param dataKey the data key on which to filter
-     * @param dataValue the value that the data key must match for the state to be published
-     */
-    public void stateChanged(State state, StateChangeType changeType, String dataKey, String dataValue) {
-        if (parameterHasValue(dataKey, dataValue)) {
-            stateChanged(state, changeType);
-        }
     }
 
     /**
@@ -153,39 +118,128 @@ public class DeviceFeatureListener {
                 publishState = OnOffType.ON;
             }
         }
-        pollRelatedDevices();
-        binding.updateFeatureState(channelUID, publishState);
+        binding.updateFeatureState(config.getChannelUID(), publishState);
     }
 
     /**
-     * Extracts related devices from the parameter list and
-     * stores them for faster access later.
+     * Triggers a channel event on the openHAB bus
+     *
+     * @param event the name of the event to trigger
      */
+    public void triggerEvent(String event) {
+        binding.triggerFeatureEvent(config.getChannelUID(), event);
+    }
 
-    private void updateRelatedDevices() {
-        String d = parameters.get("related");
-        if (d == null) {
-            return;
-        }
-        String[] devs = d.split("\\+");
-        for (String dev : devs) {
-            InsteonAddress a = InsteonAddress.parseAddress(dev);
-            relatedDevices.add(a);
+    /**
+     * Updates channel config
+     */
+    public void updateChannelConfig() {
+        // update related devices
+        updateRelatedDevices();
+        // update broadcast group
+        updateBroadcastGroup();
+    }
+
+    /**
+     * Updates broadcast groups channel config
+     * based on "group" channel parameter or device link database
+     */
+    private void updateBroadcastGroup() {
+        DeviceFeature f = config.getFeature();
+        InsteonDevice dev = f.getDevice();
+        if (config.hasParameter("group")) {
+            if (binding.isModemDBComplete()) {
+                int group = config.getIntParameter("group", -1);
+                if (binding.getDriver().getModemDB().hasBroadcastGroup(group)) {
+                    config.setBroadcastGroup(group);
+                } else {
+                    logger.warn("broadcast group {} not found in modem db on channel {}", group, getChannelName());
+                }
+            }
+        } else if (!dev.isModem()) {
+            if (dev.getLinkDB().isComplete() && !config.getRelatedDevices().isEmpty()) {
+                // iterate over device link db broadcast groups based on "group" feature parameter as component id
+                int componentId = f.getIntParameter("group", 1);
+                for (int group : dev.getLinkDB().getBroadcastGroups(componentId)) {
+                    // compare related devices channel config with the modem db for a given broadcast group
+                    List<InsteonAddress> devices = binding.getDriver().getModemDB().getRelatedDevices(group);
+                    devices.remove(dev.getAddress());
+                    devices.removeAll(config.getRelatedDevices());
+                    // set broadcast group if two lists identical
+                    if (devices.isEmpty()) {
+                        config.setBroadcastGroup(group);
+                        break;
+                    }
+                }
+            }
         }
     }
 
     /**
-     * polls all devices that are related to this item
-     * by the "related" keyword
+     * Updates related devices channel config
+     * based on device/modem link database
+     */
+    private void updateRelatedDevices() {
+        DeviceFeature f = config.getFeature();
+        InsteonDevice dev = f.getDevice();
+        if (config.hasParameter("group")) {
+            if (binding.isModemDBComplete()) {
+                // set devices using "group" channel config parameter to search in modem database if complete
+                int group = config.getIntParameter("group", -1);
+                List<InsteonAddress> devices = binding.getDriver().getModemDB().getRelatedDevices(group);
+                config.setRelatedDevices(devices);
+            }
+        } else if (!dev.isModem()) {
+            if (dev.getLinkDB().isComplete()) {
+                // set devices using "group" feature parameter to search in device link database if complete
+                int group = f.getIntParameter("group", 1);
+                List<InsteonAddress> devices = dev.getLinkDB().getRelatedDevices(group);
+                config.setRelatedDevices(devices);
+            }
+        }
+    }
+
+    /**
+     * Adjusts related devices for a given command
+     *
+     * @param cmd the command to adjust to
+     */
+    public void adjustRelatedDevices(Command cmd) {
+        // DeviceFeature f = config.getFeature();
+        // InsteonAddress addr =
+        // for (InsteonAddress raddr : config.getRelatedDevices()) {
+        //     logger.debug("adjusting related device {}", raddr);
+        //     InsteonDevice dev = binding.getDevice(raddr);
+        //     if (dev != null) {
+        //
+        //         DeviceFeature rf = dev.getRelatedFeature(f.getDevice().getAddress(), f.getIntParameter("group", 1));
+        //         if (rf != null) {
+        //         InsteonChannelConfiguration conf =
+        //
+        //           }
+        //             int componentId = dev.getLinkDB().getRespon
+        //
+        //         }
+        //     } else {
+        //         logger.warn("device {} related to channel {} is not configured!", addr, getChannelName());
+        //     }
+        // }
+    }
+
+    /**
+     * Polls all devices that are related to this channel
      */
     public void pollRelatedDevices() {
-        for (InsteonAddress a : relatedDevices) {
-            logger.debug("polling related device {} in {} ms", a, TIME_DELAY_POLL_RELATED_MSEC);
-            InsteonDevice d = binding.getDevice(a);
-            if (d != null) {
-                d.doPoll(TIME_DELAY_POLL_RELATED_MSEC);
+        for (InsteonAddress addr : config.getRelatedDevices()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("polling related device {} in {} msec", addr, TIME_DELAY_POLL_RELATED_MSEC);
+            }
+            InsteonDevice dev = binding.getDevice(addr);
+            if (dev != null) {
+                // poll related device limiting to responder features
+                dev.doPollResponders(TIME_DELAY_POLL_RELATED_MSEC);
             } else {
-                logger.warn("device {} related to item {} is not configured!", a, itemName);
+                logger.warn("device {} related to channel {} is not configured!", addr, getChannelName());
             }
         }
     }

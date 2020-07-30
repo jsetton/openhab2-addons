@@ -14,7 +14,6 @@ package org.openhab.binding.insteon.internal.driver;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
@@ -23,18 +22,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.eclipse.smarthome.io.transport.serial.SerialPortManager;
-import org.openhab.binding.insteon.internal.device.DeviceType;
-import org.openhab.binding.insteon.internal.device.DeviceTypeLoader;
+import org.openhab.binding.insteon.internal.database.LinkDBBuilder;
+import org.openhab.binding.insteon.internal.database.ModemDB;
+import org.openhab.binding.insteon.internal.database.ModemDBBuilder;
 import org.openhab.binding.insteon.internal.device.InsteonAddress;
 import org.openhab.binding.insteon.internal.device.InsteonDevice;
-import org.openhab.binding.insteon.internal.device.ModemDBBuilder;
-import org.openhab.binding.insteon.internal.handler.InsteonDeviceHandler;
+import org.openhab.binding.insteon.internal.device.ProductData;
+import org.openhab.binding.insteon.internal.device.ProductDataLoader;
 import org.openhab.binding.insteon.internal.message.FieldException;
 import org.openhab.binding.insteon.internal.message.InvalidMessageTypeException;
 import org.openhab.binding.insteon.internal.message.Msg;
 import org.openhab.binding.insteon.internal.message.MsgFactory;
 import org.openhab.binding.insteon.internal.message.MsgListener;
-import org.openhab.binding.insteon.internal.utils.Utils;
+import org.openhab.binding.insteon.internal.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,6 +55,7 @@ import org.slf4j.LoggerFactory;
  * @author Bernd Pfrommer - Initial contribution
  * @author Daniel Pfrommer - openHAB 1 insteonplm binding
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @SuppressWarnings("null")
@@ -73,16 +74,16 @@ public class Port {
     private IOStream ioStream;
     private String devName;
     private String logName;
-    private Modem modem;
+    private Modem modem = new Modem();
     private IOStreamReader reader;
     private IOStreamWriter writer;
     private final int readSize = 1024; // read buffer size
     private @Nullable Thread readThread = null;
     private @Nullable Thread writeThread = null;
     private boolean running = false;
-    private boolean modemDBComplete = false;
     private MsgFactory msgFactory = new MsgFactory();
     private Driver driver;
+    private LinkDBBuilder ldbb;
     private ModemDBBuilder mdbb;
     private ArrayList<MsgListener> listeners = new ArrayList<>();
     private LinkedBlockingQueue<Msg> writeQueue = new LinkedBlockingQueue<>();
@@ -92,27 +93,20 @@ public class Port {
      * Constructor
      *
      * @param devName the name of the port, i.e. '/dev/insteon'
-     * @param d The Driver object that manages this port
+     * @param driver the Driver object that manages this port
+     * @param serialPortManager the serial port manager
+     * @param scheduler the scheduler
      */
-    public Port(String devName, Driver d, @Nullable SerialPortManager serialPortManager,
+    public Port(String devName, Driver driver, @Nullable SerialPortManager serialPortManager,
             ScheduledExecutorService scheduler) {
         this.devName = devName;
-        this.driver = d;
-        this.logName = Utils.redactPassword(devName);
-        this.modem = new Modem();
-        addListener(modem);
+        this.driver = driver;
+        this.logName = StringUtils.redactPassword(devName);
         this.ioStream = IOStream.create(serialPortManager, devName);
         this.reader = new IOStreamReader();
         this.writer = new IOStreamWriter();
+        this.ldbb = new LinkDBBuilder(this, scheduler);
         this.mdbb = new ModemDBBuilder(this, scheduler);
-    }
-
-    public boolean isModem(InsteonAddress a) {
-        return modem.getAddress().equals(a);
-    }
-
-    public synchronized boolean isModemDBComplete() {
-        return (modemDBComplete);
     }
 
     public boolean isRunning() {
@@ -123,12 +117,20 @@ public class Port {
         return modem.getAddress();
     }
 
-    public String getDeviceName() {
+    public String getName() {
         return devName;
     }
 
     public Driver getDriver() {
         return driver;
+    }
+
+    public @Nullable InsteonDevice getModemDevice() {
+        return modem.getDevice();
+    }
+
+    public ModemDB getModemDB() {
+        return modem.getDB();
     }
 
     public void addListener(MsgListener l) {
@@ -142,23 +144,11 @@ public class Port {
     public void removeListener(MsgListener l) {
         synchronized (listeners) {
             if (listeners.remove(l)) {
-                logger.debug("removed listener from port");
+                if (logger.isTraceEnabled()) {
+                    logger.trace("removed listener from port");
+                }
             }
         }
-    }
-
-    /**
-     * Clear modem database that has been queried so far.
-     */
-    public void clearModemDB() {
-        logger.debug("clearing modem db!");
-        Map<InsteonAddress, @Nullable ModemDBEntry> dbes = getDriver().lockModemDBEntries();
-        for (InsteonAddress addr : dbes.keySet()) {
-            if (!dbes.get(addr).isModem()) {
-                dbes.remove(addr);
-            }
-        }
-        getDriver().unlockModemDBEntries();
     }
 
     /**
@@ -186,9 +176,9 @@ public class Port {
         writeThread.setDaemon(true);
         writeThread.start();
 
-        if (!mdbb.isComplete()) {
+        if (!modem.isInitialized()) {
+            logger.debug("initializing modem");
             modem.initialize();
-            mdbb.start(); // start downloading the device list
         }
 
         running = true;
@@ -207,6 +197,13 @@ public class Port {
         running = false;
         ioStream.stop();
         ioStream.close();
+
+        if (ldbb.isRunning()) {
+            ldbb.stop();
+        }
+        if (mdbb.isRunning()) {
+            mdbb.stop();
+        }
 
         if (readThread != null) {
             readThread.interrupt();
@@ -253,28 +250,72 @@ public class Port {
         }
         try {
             writeQueue.add(m);
-            logger.trace("enqueued msg: {}", m);
+            if (logger.isTraceEnabled()) {
+                logger.trace("enqueued msg ({}): {}", writeQueue.size(), m);
+            }
         } catch (IllegalStateException e) {
             logger.warn("cannot write message {}, write queue is full!", m);
         }
     }
 
     /**
-     * Gets called by the modem database builder when the modem database is complete
+     * Handles port disconnected event
      */
-    public void modemDBComplete() {
-        synchronized (this) {
-            modemDBComplete = true;
-        }
-        driver.modemDBComplete(this);
-    }
-
     public void disconnected() {
         if (isRunning()) {
             if (!disconnected.getAndSet(true)) {
                 logger.warn("port {} disconnected", logName);
                 driver.disconnected();
             }
+        }
+    }
+
+    /**
+     * Handles port message written event
+     *
+     * @param msg the message that was written
+     */
+    public void messageWritten(Msg msg) {
+        try {
+            if (msg.containsField("toAddress") && !msg.isBroadcast()) {
+                long now = System.currentTimeMillis();
+                InsteonAddress addr = msg.getAddress("toAddress");
+                if (logger.isTraceEnabled()) {
+                    logger.trace("request sent to {}", addr);
+                }
+                driver.requestSent(addr, now); // notify driver
+            }
+        } catch (FieldException e) {
+            logger.warn("error parsing {}: ", msg, e);
+        }
+    }
+
+    /**
+     * Builds the link db for a given device
+     *
+     * @param device device link db to build
+     * @param delay downloading delay (in milliseconds)
+     */
+    public void buildLinkDB(InsteonDevice device, long delay) {
+        if (ldbb.isRunning()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("link db builder is already running for {}", ldbb.getDevice().getAddress());
+            }
+        } else {
+            ldbb.start(device, delay);
+        }
+    }
+
+    /**
+     * Builds the modem db
+     */
+    private void buildModemDB() {
+        if (mdbb.isRunning()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("modem db builder is already running");
+            }
+        } else {
+            mdbb.start();
         }
     }
 
@@ -330,6 +371,9 @@ public class Port {
                 try {
                     Msg msg = msgFactory.processData();
                     if (msg != null) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("got msg: {}", msg);
+                        }
                         toAllListeners(msg);
                         notifyWriter(msg);
                     }
@@ -350,16 +394,12 @@ public class Port {
         private void notifyWriter(Msg msg) {
             synchronized (getRequestReplyLock()) {
                 if (reply == ReplyType.WAITING_FOR_ACK) {
-                    if (!msg.isUnsolicited()) {
+                    if (msg.isEcho()) {
                         reply = (msg.isPureNack() ? ReplyType.GOT_NACK : ReplyType.GOT_ACK);
-                        logger.trace("signaling receipt of ack: {}", (reply == ReplyType.GOT_ACK));
+                        if (logger.isTraceEnabled()) {
+                            logger.trace("signaling receipt of ack: {}", (reply == ReplyType.GOT_ACK));
+                        }
                         getRequestReplyLock().notify();
-                    } else if (msg.isPureNack()) {
-                        reply = ReplyType.GOT_NACK;
-                        logger.trace("signaling receipt of pure nack");
-                        getRequestReplyLock().notify();
-                    } else {
-                        logger.trace("got unsolicited message");
                     }
                 }
             }
@@ -411,26 +451,29 @@ public class Port {
          * @return true if retransmission is necessary
          */
         public boolean waitForReply() {
-            reply = ReplyType.WAITING_FOR_ACK;
-            while (reply == ReplyType.WAITING_FOR_ACK) {
-                try {
-                    logger.trace("writer waiting for ack.");
-                    // There have been cases observed, in particular for
-                    // the Hub, where we get no ack or nack back, causing the binding
-                    // to hang in the wait() below, because unsolicited messages
-                    // do not trigger a notify(). For this reason we request retransmission
-                    // if the wait() times out.
-                    getRequestReplyLock().wait(30000); // be patient for 30 msec
-                    if (reply == ReplyType.WAITING_FOR_ACK) { // timeout expired without getting ACK or NACK
+            try {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("writer waiting for ack");
+                }
+                reply = ReplyType.WAITING_FOR_ACK;
+                // There have been cases observed, in particular for
+                // the Hub, where we get no ack or nack back, causing the binding
+                // to hang in the wait() below, because unsolicited messages
+                // do not trigger a notify(). For this reason we request retransmission
+                // if the wait() times out.
+                getRequestReplyLock().wait(30000); // be patient for 30 msec
+                if (reply == ReplyType.WAITING_FOR_ACK) { // timeout expired without getting ACK or NACK
+                    if (logger.isTraceEnabled()) {
                         logger.trace("writer timeout expired, asking for retransmit!");
-                        reply = ReplyType.GOT_NACK;
-                        break;
-                    } else {
+                    }
+                    reply = ReplyType.GOT_NACK;
+                } else {
+                    if (logger.isTraceEnabled()) {
                         logger.trace("writer got ack: {}", (reply == ReplyType.GOT_ACK));
                     }
-                } catch (InterruptedException e) {
-                    break; // done for the day...
                 }
+            } catch (InterruptedException e) {
+                // do nothing
             }
             return (reply == ReplyType.GOT_NACK);
         }
@@ -444,7 +487,8 @@ public class Port {
      */
     @NonNullByDefault
     class IOStreamWriter implements Runnable {
-        private static final int WAIT_TIME = 200; // milliseconds
+        private static final int RETRY_WAIT_TIME = 200; // milliseconds
+        private static final int WRITE_WAIT_TIME = 500; // milliseconds
 
         @Override
         public void run() {
@@ -452,29 +496,29 @@ public class Port {
             while (true) {
                 try {
                     // this call blocks until the lock on the queue is released
-                    logger.trace("writer checking message queue");
+                    if (logger.isTraceEnabled()) {
+                        logger.trace("writer checking message queue");
+                    }
                     Msg msg = writeQueue.take();
                     if (msg.getData() == null) {
                         logger.warn("found null message in write queue!");
                     } else {
-                        logger.debug("writing ({}): {}", msg.getQuietTime(), msg);
-                        // To debug race conditions during startup (i.e. make the .items
-                        // file definitions be available *before* the modem link records,
-                        // slow down the modem traffic with the following statement:
-                        // Thread.sleep(500);
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("writing: {}", msg);
+                        }
                         synchronized (reader.getRequestReplyLock()) {
                             ioStream.write(msg.getData());
+                            messageWritten(msg); // notify port
                             while (reader.waitForReply()) {
-                                Thread.sleep(WAIT_TIME);
-                                logger.trace("retransmitting msg: {}", msg);
+                                Thread.sleep(RETRY_WAIT_TIME);
+                                if (logger.isTraceEnabled()) {
+                                    logger.trace("retransmitting msg: {}", msg);
+                                }
                                 ioStream.write(msg.getData());
                             }
-
                         }
-                        // if rate limited, need to sleep now.
-                        if (msg.getQuietTime() > 0) {
-                            Thread.sleep(msg.getQuietTime());
-                        }
+                        // limit rate by waiting between writes to transport
+                        Thread.sleep(WRITE_WAIT_TIME);
                     }
                 } catch (InterruptedException e) {
                     logger.debug("got interrupted exception in write thread");
@@ -493,16 +537,25 @@ public class Port {
      * Class to get info about the modem
      */
     @NonNullByDefault
-    class Modem implements MsgListener {
+    public class Modem implements MsgListener {
+        private volatile boolean initialized = false;
         private @Nullable InsteonDevice device = null;
+        private ModemDB db = new ModemDB();
 
-        InsteonAddress getAddress() {
+        public InsteonAddress getAddress() {
             return (device == null) ? new InsteonAddress() : (device.getAddress());
         }
 
-        @Nullable
-        InsteonDevice getDevice() {
+        public @Nullable InsteonDevice getDevice() {
             return device;
+        }
+
+        public ModemDB getDB() {
+            return db;
+        }
+
+        public boolean isInitialized() {
+            return initialized;
         }
 
         @Override
@@ -512,22 +565,24 @@ public class Port {
                     return;
                 }
                 if (msg.getByte("Cmd") == 0x60) {
-                    // add the modem to the device list
-                    InsteonAddress a = new InsteonAddress(msg.getAddress("IMAddress"));
-                    DeviceType dt = DeviceTypeLoader.instance().getDeviceType(InsteonDeviceHandler.PLM_PRODUCT_KEY);
-                    if (dt == null) {
-                        logger.warn("unknown modem product key: {} for modem: {}.",
-                                InsteonDeviceHandler.PLM_PRODUCT_KEY, a);
+                    InsteonAddress addr = msg.getAddress("IMAddress");
+                    ProductData productData = ProductDataLoader.instance().getProductData(
+                            msg.getHexString("DeviceCategory"), msg.getHexString("DeviceSubCategory"));
+                    // initialize modem device
+                    device = InsteonDevice.makeDevice(driver, addr, productData);
+                    if (device == null) {
+                        logger.warn("failed to initialize modem device {}", addr);
                     } else {
-                        device = InsteonDevice.makeDevice(dt);
-                        device.setAddress(a);
-                        device.setProductKey(InsteonDeviceHandler.PLM_PRODUCT_KEY);
-                        device.setDriver(driver);
                         device.setIsModem(true);
-                        logger.debug("found modem {} in device_types: {}", a, device.toString());
-                        mdbb.updateModemDB(a, Port.this, null, true);
+                        productData.setFirmwareVersion(msg.getInt("FirmwareVersion"));
+                        driver.modemFound(); // notify driver
+                        initialized = true;
+                        // build the modem db if not complete
+                        if (!db.isComplete()) {
+                            buildModemDB();
+                        }
                     }
-                    // can unsubscribe now
+                    // remove listener
                     removeListener(this);
                 }
             } catch (FieldException e) {
@@ -536,13 +591,19 @@ public class Port {
         }
 
         public void initialize() {
+            logger.debug("getting modem info");
+            addListener(this);
+            getModemInfo();
+        }
+
+        private void getModemInfo() {
             try {
                 Msg m = Msg.makeMessage("GetIMInfo");
                 writeMessage(m);
             } catch (IOException e) {
-                logger.warn("modem init failed!", e);
+                logger.warn("error sending modem info query ", e);
             } catch (InvalidMessageTypeException e) {
-                logger.warn("invalid message", e);
+                logger.warn("invalid message ", e);
             }
         }
     }

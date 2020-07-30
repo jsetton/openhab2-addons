@@ -13,14 +13,12 @@
 package org.openhab.binding.insteon.internal.device;
 
 import java.lang.reflect.InvocationTargetException;
-import java.util.HashMap;
 import java.util.Map;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.binding.insteon.internal.message.FieldException;
 import org.openhab.binding.insteon.internal.message.Msg;
-import org.openhab.binding.insteon.internal.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,15 +27,12 @@ import org.slf4j.LoggerFactory;
  *
  * @author Bernd Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @SuppressWarnings("null")
-public abstract class MessageDispatcher {
+public abstract class MessageDispatcher extends FeatureBaseHandler {
     private static final Logger logger = LoggerFactory.getLogger(MessageDispatcher.class);
-
-    DeviceFeature feature;
-    @Nullable
-    Map<String, @Nullable String> parameters = new HashMap<>();
 
     /**
      * Constructor
@@ -45,72 +40,74 @@ public abstract class MessageDispatcher {
      * @param f DeviceFeature to which this MessageDispatcher belongs
      */
     MessageDispatcher(DeviceFeature f) {
-        feature = f;
-    }
-
-    public void setParameters(@Nullable Map<String, @Nullable String> map) {
-        parameters = map;
+        super(f);
     }
 
     /**
-     * Generic handling of incoming ALL LINK messages
+     * Generic handling of incoming broadcast or cleanup messages
      *
-     * @param msg the message received
-     * @return true if the message was handled by this function
+     * @param msg  the message received
+     * @param f    the device feature
      */
-    protected boolean handleAllLinkMessage(Msg msg) {
-        if (!msg.isAllLink()) {
-            return false;
+    protected void handleBroadcastOrCleanupMessage(Msg msg, DeviceFeature f) throws FieldException {
+        // ALL_LINK_BROADCAST and ALL_LINK_CLEANUP have a valid Command1 field
+        // but the CLEANUP_SUCCESS (of type ALL_LINK_BROADCAST!) message has cmd1 = 0x06 and
+        // the cmd as the high byte of the toAddress.
+        byte cmd1 = msg.getByte("command1");
+        if (!msg.isCleanup() && cmd1 == 0x06) {
+            cmd1 = msg.getAddress("toAddress").getHighByte();
         }
-        try {
-            InsteonAddress a = msg.getAddress("toAddress");
-            // ALL_LINK_BROADCAST and ALL_LINK_CLEANUP
-            // have a valid Command1 field
-            // but the CLEANUP_SUCCESS (of type ALL_LINK_BROADCAST!)
-            // message has cmd1 = 0x06 and the cmd as the
-            // high byte of the toAddress.
-            byte cmd1 = msg.getByte("command1");
-            if (!msg.isCleanup() && cmd1 == 0x06) {
-                cmd1 = a.getHighByte();
+        int group = msg.getGroup();
+        MessageHandler h = f.getMsgHandler(cmd1);
+        if (h == null) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}:{} ignoring msg as not for this feature", f.getDevice().getAddress(), f.getName());
             }
-            // For ALL_LINK_BROADCAST messages, the group is
-            // in the low byte of the toAddress. For direct
-            // ALL_LINK_CLEANUP, it is in Command2
-
-            int group = (msg.isCleanup() ? msg.getByte("command2") : a.getLowByte()) & 0xff;
-            MessageHandler h = feature.getMsgHandlers().get(cmd1 & 0xFF);
-            if (h == null) {
-                logger.debug("msg is not for this feature");
-                return true;
+        } else if (h.isDuplicate(msg)) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}:{} ignoring msg as duplicate", f.getDevice().getAddress(), f.getName());
             }
-            if (!h.isDuplicate(msg)) {
-                if (h.matchesGroup(group) && h.matches(msg)) {
-                    logger.debug("{}:{}->{} cmd1:{} group {}/{}", feature.getDevice().getAddress(), feature.getName(),
-                            h.getClass().getSimpleName(), Utils.getHexByte(cmd1), group, h.getGroup());
-                    h.handleMessage(group, cmd1, msg, feature);
-                } else {
-                    logger.debug("message ignored because matches group: {} matches filter: {}", h.matchesGroup(group),
-                            h.matches(msg));
-                }
-            } else {
-                logger.debug("message ignored as duplicate. Matches group: {} matches filter: {}",
-                        h.matchesGroup(group), h.matches(msg));
+        } else if (!h.matchesGroup(group) || !h.matches(msg)) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}:{} ignoring msg as matches group:{} filter:{}", f.getDevice().getAddress(),
+                        f.getName(), h.matchesGroup(group), h.matches(msg));
             }
-        } catch (FieldException e) {
-            logger.warn("couldn't parse ALL_LINK message: {}", msg, e);
+        } else {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}:{}->{} {} group:{}", f.getDevice().getAddress(), f.getName(),
+                        h.getClass().getSimpleName(), msg.getType(), group != -1 ? group : "N/A");
+            }
+            h.handleMessage(group, cmd1, msg);
         }
-        return true;
     }
 
     /**
-     * Checks if this message is in response to previous query by this feature
+     * Generic handling of the incoming direct messages
      *
-     * @param msg
-     * @return true;
+     * @param msg  the message received
+     * @param f    the device feature
      */
-    boolean isMyDirectAck(Msg msg) {
-        return msg.isAckOfDirect() && (feature.getQueryStatus() == DeviceFeature.QueryStatus.QUERY_PENDING)
-                && feature.getDevice().getFeatureQueried() == feature;
+    protected void handleDirectMessage(Msg msg, DeviceFeature f) throws FieldException {
+        byte cmd1 = msg.getByte("command1");
+        int key = msg.isAckOrNackOfDirect() ? 0x19 : cmd1; // use cmd 0x19 on DIRECT ACK/NACK reply messages
+        int group = msg.getGroup();
+        MessageHandler h = f.getOrDefaultMsgHandler(key);
+        if (!h.isValid(msg)) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}:{} ignoring msg as not valid", f.getDevice().getAddress(), f.getName());
+            }
+        } else if (!h.matchesGroup(group) || !h.matches(msg)) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}:{} ignoring msg as matches group:{} filter:{}", f.getDevice().getAddress(),
+                        f.getName(), h.matchesGroup(group), h.matches(msg));
+            }
+        } else {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}:{}->{} {} group:{}", f.getDevice().getAddress(), f.getName(),
+                        h.getClass().getSimpleName(), msg.getType(), group != -1 ? group : "N/A");
+            }
+            h.handleMessage(group, cmd1, msg);
+        }
     }
 
     /**
@@ -136,61 +133,25 @@ public abstract class MessageDispatcher {
 
         @Override
         public boolean dispatch(Msg msg) {
-            byte cmd = 0x00;
-            byte cmd1 = 0x00;
-            boolean isConsumed = false;
-            int key = -1;
             try {
-                cmd = msg.getByte("Cmd");
-                cmd1 = msg.getByte("command1");
+                if (msg.isAllLinkCleanupAckOrNack()) {
+                    // Had cases when a KeypadLinc would send an ALL_LINK_CLEANUP_ACK
+                    // in response to a direct status query message
+                    return false;
+                }
+                if (msg.isBroadcast() || msg.isCleanup()) {
+                    handleBroadcastOrCleanupMessage(msg, feature);
+                    return false;
+                }
+                if (msg.isDirect() || feature.isMyDirectAck(msg)) {
+                    // handle DIRECT and my ACK messages queried by this feature
+                    handleDirectMessage(msg, feature);
+                }
+                return feature.isMyDirectAckOrNack(msg);
             } catch (FieldException e) {
-                logger.debug("no command found, dropping msg {}", msg);
-                return false;
+                logger.warn("error parsing, dropping msg {}", msg);
             }
-            if (msg.isAllLinkCleanupAckOrNack()) {
-                // Had cases when a KeypadLinc would send an ALL_LINK_CLEANUP_ACK
-                // in response to a direct status query message
-                return false;
-            }
-            if (handleAllLinkMessage(msg)) {
-                return false;
-            }
-            if (msg.isAckOfDirect()) {
-                // in the case of direct ack, the cmd1 code is useless.
-                // you have to know what message was sent before to
-                // interpret the reply message
-                if (isMyDirectAck(msg)) {
-                    logger.debug("{}:{} DIRECT_ACK: q:{} cmd: {}", feature.getDevice().getAddress(), feature.getName(),
-                            feature.getQueryStatus(), cmd);
-                    isConsumed = true;
-                    if (cmd == 0x50) {
-                        // must be a reply to our message, tweak the cmd1 code!
-                        logger.debug("changing key to 0x19 for msg {}", msg);
-                        key = 0x19; // we have installed a handler under that command number
-                    }
-                }
-            } else {
-                key = (cmd1 & 0xFF);
-            }
-            if (key != -1 || feature.isStatusFeature()) {
-                MessageHandler h = feature.getMsgHandlers().get(key);
-                if (h == null) {
-                    h = feature.getDefaultMsgHandler();
-                }
-                if (h.matches(msg)) {
-                    if (!isConsumed) {
-                        logger.debug("{}:{}->{} DIRECT", feature.getDevice().getAddress(), feature.getName(),
-                                h.getClass().getSimpleName());
-                    }
-                    h.handleMessage(-1, cmd1, msg, feature);
-                }
-            }
-            if (isConsumed) {
-                feature.setQueryStatus(DeviceFeature.QueryStatus.QUERY_ANSWERED);
-                logger.debug("defdisp: {}:{} set status to: {}", feature.getDevice().getAddress(), feature.getName(),
-                        feature.getQueryStatus());
-            }
-            return isConsumed;
+            return false;
         }
     }
 
@@ -202,64 +163,18 @@ public abstract class MessageDispatcher {
 
         @Override
         public boolean dispatch(Msg msg) {
-            byte cmd = 0x00;
-            byte cmd1 = 0x00;
-            boolean isConsumed = false;
-            int key = -1;
             try {
-                cmd = msg.getByte("Cmd");
-                cmd1 = msg.getByte("command1");
+                if (feature.isMyDirectAck(msg)) {
+                    // get connected features to handle my DIRECT ACK messages
+                    for (DeviceFeature f : feature.getConnectedFeatures()) {
+                        handleDirectMessage(msg, f);
+                    }
+                }
+                return feature.isMyDirectAckOrNack(msg);
             } catch (FieldException e) {
-                logger.debug("no command found, dropping msg {}", msg);
-                return false;
+                logger.warn("error parsing, dropping msg {}", msg);
             }
-            if (msg.isAllLinkCleanupAckOrNack()) {
-                // Had cases when a KeypadLinc would send an ALL_LINK_CLEANUP_ACK
-                // in response to a direct status query message
-                return false;
-            }
-            if (handleAllLinkMessage(msg)) {
-                return false;
-            }
-            if (msg.isAckOfDirect()) {
-                // in the case of direct ack, the cmd1 code is useless.
-                // you have to know what message was sent before to
-                // interpret the reply message
-                if (isMyDirectAck(msg)) {
-                    logger.debug("{}:{} qs:{} cmd: {}", feature.getDevice().getAddress(), feature.getName(),
-                            feature.getQueryStatus(), cmd);
-                    isConsumed = true;
-                    if (cmd == 0x50) {
-                        // must be a reply to our message, tweak the cmd1 code!
-                        logger.debug("changing key to 0x19 for msg {}", msg);
-                        key = 0x19; // we have installed a handler under that command number
-                    }
-                }
-            } else {
-                key = (cmd1 & 0xFF);
-            }
-            if (key != -1) {
-                for (DeviceFeature f : feature.getConnectedFeatures()) {
-                    MessageHandler h = f.getMsgHandlers().get(key);
-                    if (h == null) {
-                        h = f.getDefaultMsgHandler();
-                    }
-                    if (h.matches(msg)) {
-                        if (!isConsumed) {
-                            logger.debug("{}:{}->{} DIRECT", f.getDevice().getAddress(), f.getName(),
-                                    h.getClass().getSimpleName());
-                        }
-                        h.handleMessage(-1, cmd1, msg, f);
-                    }
-
-                }
-            }
-            if (isConsumed) {
-                feature.setQueryStatus(DeviceFeature.QueryStatus.QUERY_ANSWERED);
-                logger.debug("{}:{} set status to: {}", feature.getDevice().getAddress(), feature.getName(),
-                        feature.getQueryStatus());
-            }
-            return isConsumed;
+            return false;
         }
     }
 
@@ -271,22 +186,14 @@ public abstract class MessageDispatcher {
 
         @Override
         public boolean dispatch(Msg msg) {
-            if (msg.isAllLinkCleanupAckOrNack()) {
-                // Had cases when a KeypadLinc would send an ALL_LINK_CLEANUP_ACK
-                // in response to a direct status query message
-                return false;
-            }
-            if (handleAllLinkMessage(msg)) {
-                return false;
-            }
-            if (msg.isAckOfDirect()) {
-                boolean isMyAck = isMyDirectAck(msg);
-                if (isMyAck) {
-                    logger.debug("{}:{} got poll ACK", feature.getDevice().getAddress(), feature.getName());
+            if (feature.isMyDirectAckOrNack(msg)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}:{} got poll {}", feature.getDevice().getAddress(), feature.getName(),
+                            msg.getType());
                 }
-                return (isMyAck);
+                return true;
             }
-            return (false); // not a direct ack, so we didn't consume it either
+            return false;
         }
     }
 
@@ -298,33 +205,25 @@ public abstract class MessageDispatcher {
 
         @Override
         public boolean dispatch(Msg msg) {
-            byte cmd1 = 0x00;
             try {
-                if (handleAllLinkMessage(msg)) {
-                    return false;
-                }
                 if (msg.isAllLinkCleanupAckOrNack()) {
                     // Had cases when a KeypadLinc would send an ALL_LINK_CLEANUP_ACK
                     // in response to a direct status query message
                     return false;
                 }
-                cmd1 = msg.getByte("command1");
+                if (msg.isBroadcast() || msg.isCleanup()) {
+                    handleBroadcastOrCleanupMessage(msg, feature);
+                    return false;
+                }
+                if (msg.isDirect() || msg.isAckOrNackOfDirect()) {
+                    // handle DIRECT and any ACK/NACK messages
+                    handleDirectMessage(msg, feature);
+                }
+                return feature.isMyDirectAckOrNack(msg);
             } catch (FieldException e) {
-                logger.debug("no cmd1 found, dropping msg {}", msg);
-                return false;
+                logger.warn("error parsing, dropping msg {}", msg);
             }
-            boolean isConsumed = isMyDirectAck(msg);
-            int key = (cmd1 & 0xFF);
-            MessageHandler h = feature.getMsgHandlers().get(key);
-            if (h == null) {
-                h = feature.getDefaultMsgHandler();
-            }
-            if (h.matches(msg)) {
-                logger.trace("{}:{}->{} {}", feature.getDevice().getAddress(), feature.getName(),
-                        h.getClass().getSimpleName(), msg);
-                h.handleMessage(-1, cmd1, msg, feature);
-            }
-            return isConsumed;
+            return false;
         }
     }
 
@@ -339,17 +238,16 @@ public abstract class MessageDispatcher {
             try {
                 byte rawX10 = msg.getByte("rawX10");
                 int cmd = (rawX10 & 0x0f);
-                MessageHandler h = feature.getMsgHandlers().get(cmd);
-                if (h == null) {
-                    h = feature.getDefaultMsgHandler();
+                MessageHandler h = feature.getOrDefaultMsgHandler(cmd);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}:{}->{} {}", feature.getDevice().getAddress(), feature.getName(),
+                            h.getClass().getSimpleName(), msg.getType());
                 }
-                logger.debug("{}:{}->{} {}", feature.getDevice().getAddress(), feature.getName(),
-                        h.getClass().getSimpleName(), msg);
                 if (h.matches(msg)) {
-                    h.handleMessage(-1, (byte) cmd, msg, feature);
+                    h.handleMessage(-1, (byte) cmd, msg);
                 }
             } catch (FieldException e) {
-                logger.warn("error parsing {}: ", msg, e);
+                logger.warn("error parsing, dropping msg {}", msg);
             }
             return false;
         }
@@ -365,9 +263,11 @@ public abstract class MessageDispatcher {
         public boolean dispatch(Msg msg) {
             MessageHandler h = feature.getDefaultMsgHandler();
             if (h.matches(msg)) {
-                logger.trace("{}:{}->{} {}", feature.getDevice().getAddress(), feature.getName(),
-                        h.getClass().getSimpleName(), msg);
-                h.handleMessage(-1, (byte) 0x01, msg, feature);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("{}:{}->{} {}", feature.getDevice().getAddress(), feature.getName(),
+                            h.getClass().getSimpleName(), msg.getType());
+                }
+                h.handleMessage(-1, (byte) 0x01, msg);
             }
             return false;
         }
@@ -396,17 +296,16 @@ public abstract class MessageDispatcher {
      * @param f the feature for which to create the dispatcher
      * @return the handler which was created
      */
-    @Nullable
-    public static <T extends MessageDispatcher> T makeHandler(String name,
-            @Nullable Map<String, @Nullable String> params, DeviceFeature f) {
+    public static @Nullable <T extends MessageDispatcher> T makeHandler(String name,
+            Map<String, @Nullable String> params, DeviceFeature f) {
         String cname = MessageDispatcher.class.getName() + "$" + name;
         try {
             Class<?> c = Class.forName(cname);
             @SuppressWarnings("unchecked")
             Class<? extends T> dc = (Class<? extends T>) c;
-            T ch = dc.getDeclaredConstructor(DeviceFeature.class).newInstance(f);
-            ch.setParameters(params);
-            return ch;
+            T md = dc.getDeclaredConstructor(DeviceFeature.class).newInstance(f);
+            md.addParameters(params);
+            return md;
         } catch (ClassNotFoundException | InstantiationException | IllegalAccessException | IllegalArgumentException
                 | InvocationTargetException | NoSuchMethodException | SecurityException e) {
             logger.warn("error trying to create dispatcher: {}", name, e);

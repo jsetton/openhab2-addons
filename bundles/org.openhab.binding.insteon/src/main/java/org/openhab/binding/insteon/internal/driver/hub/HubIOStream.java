@@ -23,7 +23,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
-import org.apache.commons.lang.StringUtils;
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.binding.insteon.internal.driver.IOStream;
@@ -35,6 +34,7 @@ import org.slf4j.LoggerFactory;
  *
  * @author Daniel Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  *
  */
 @NonNullByDefault
@@ -160,7 +160,9 @@ public class HubIOStream extends IOStream implements Runnable {
      * @throws IOException
      */
     private synchronized void clearBuffer() throws IOException {
-        logger.trace("clearing buffer");
+        if (logger.isTraceEnabled()) {
+            logger.trace("clearing buffer");
+        }
         getURL("/1?XB=M=1");
         bufferIdx = 0;
     }
@@ -179,7 +181,9 @@ public class HubIOStream extends IOStream implements Runnable {
             b.append(String.format("%02x", msg.get()));
         }
         String hexMSG = b.toString();
-        logger.trace("writing a message");
+        if (logger.isTraceEnabled()) {
+            logger.trace("writing a message");
+        }
         getURL("/3?" + hexMSG + "=I=3");
         bufferIdx = 0;
     }
@@ -191,7 +195,9 @@ public class HubIOStream extends IOStream implements Runnable {
      */
     public synchronized void poll() throws IOException {
         String buffer = bufferStatus(); // fetch via http call
-        logger.trace("poll: {}", buffer);
+        if (logger.isTraceEnabled()) {
+            logger.trace("poll: {}", buffer);
+        }
         //
         // The Hub maintains a ring buffer where the last two digits (in hex!) represent
         // the position of the last byte read.
@@ -213,8 +219,10 @@ public class HubIOStream extends IOStream implements Runnable {
             return; // XXX why return here????
         }
 
-        if (StringUtils.repeat("0", data.length()).equals(data)) {
-            logger.trace("skip cleared buffer");
+        if (isClearedBuffer(data)) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("skip cleared buffer");
+            }
             bufferIdx = 0;
             return;
         }
@@ -223,22 +231,38 @@ public class HubIOStream extends IOStream implements Runnable {
         if (nIdx < bufferIdx) {
             String msgStart = data.substring(bufferIdx, data.length());
             String msgEnd = data.substring(0, nIdx);
-            if (StringUtils.repeat("0", msgStart.length()).equals(msgStart)) {
-                logger.trace("discard cleared buffer wrap around msg start");
+            if (isClearedBuffer(msgStart)) {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("discard cleared buffer wrap around msg start");
+                }
                 msgStart = "";
             }
 
             msg.append(msgStart + msgEnd);
-            logger.trace("wrap around: copying new data on: {}", msg.toString());
+            if (logger.isTraceEnabled()) {
+                logger.trace("wrap around: copying new data on: {}", msg.toString());
+            }
         } else {
             msg.append(data.substring(bufferIdx, nIdx));
-            logger.trace("no wrap:      appending new data: {}", msg.toString());
+            if (logger.isTraceEnabled()) {
+                logger.trace("no wrap:      appending new data: {}", msg.toString());
+            }
         }
         if (msg.length() != 0) {
             ByteBuffer buf = ByteBuffer.wrap(hexStringToByteArray(msg.toString()));
             ((HubInputStream) in).handle(buf);
         }
         bufferIdx = nIdx;
+    }
+
+    /**
+     *  Returns if is cleared buffer
+     *
+     * @param  data buffer data to check
+     * @return      true if all zeros in buffer
+     */
+    private boolean isClearedBuffer(String data) {
+        return String.format("%0" + data.length() + "d", 0).equals(data);
     }
 
     /**
@@ -261,7 +285,9 @@ public class HubIOStream extends IOStream implements Runnable {
                 connection.setRequestProperty("Authorization", auth);
             }
 
-            logger.debug("getting {}", url);
+            if (logger.isDebugEnabled()) {
+                logger.debug("getting {}", url);
+            }
 
             int responseCode = connection.getResponseCode();
             if (responseCode != 200) {
@@ -308,7 +334,9 @@ public class HubIOStream extends IOStream implements Runnable {
             try {
                 poll();
             } catch (IOException e) {
-                logger.warn("got exception while polling: {}", e.toString());
+                logger.warn("failed to poll hub: ", e);
+                // set input stream object error to be thrown on next read call
+                ((HubInputStream) in).setError(e.getMessage());
             }
             try {
                 Thread.sleep(pollTime);
@@ -346,8 +374,13 @@ public class HubIOStream extends IOStream implements Runnable {
 
         // A buffer to keep bytes while we are waiting for the inputstream to read
         private ReadByteBuffer buffer = new ReadByteBuffer(1024);
+        private @Nullable String error = null;
 
         public HubInputStream() {
+        }
+
+        public void setError(String error) {
+            this.error = error;
         }
 
         public void handle(ByteBuffer b) throws IOException {
@@ -358,11 +391,17 @@ public class HubIOStream extends IOStream implements Runnable {
 
         @Override
         public int read() throws IOException {
+            if (error != null) {
+                throw new IOException(error);
+            }
             return buffer.get();
         }
 
         @Override
         public int read(byte @Nullable [] b, int off, int len) throws IOException {
+            if (error != null) {
+                throw new IOException(error);
+            }
             return buffer.get(b, off, len);
         }
 
@@ -383,23 +422,24 @@ public class HubIOStream extends IOStream implements Runnable {
         private ByteArrayOutputStream out = new ByteArrayOutputStream();
 
         @Override
-        public void write(int b) {
+        public void write(int b) throws IOException {
             out.write(b);
             flushBuffer();
         }
 
         @Override
-        public void write(byte @Nullable [] b, int off, int len) {
+        public void write(byte @Nullable [] b, int off, int len) throws IOException {
             out.write(b, off, len);
             flushBuffer();
         }
 
-        private void flushBuffer() {
+        private void flushBuffer() throws IOException {
             ByteBuffer buffer = ByteBuffer.wrap(out.toByteArray());
             try {
                 HubIOStream.this.write(buffer);
             } catch (IOException e) {
-                logger.warn("failed to write to hub: {}", e.toString());
+                logger.warn("failed to write to hub: ", e);
+                throw new IOException(e.getMessage());
             }
             out.reset();
         }

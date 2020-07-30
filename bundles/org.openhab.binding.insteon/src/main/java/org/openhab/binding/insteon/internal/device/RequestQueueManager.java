@@ -14,6 +14,7 @@ package org.openhab.binding.insteon.internal.device;
 
 import java.util.HashMap;
 import java.util.PriorityQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -25,9 +26,9 @@ import org.slf4j.LoggerFactory;
  *
  * - Each device has its own request queue, and the RequestQueueManager keeps a
  * queue of queues.
- * - Each entry in m_requestQueues corresponds to a single device's request queue.
- * A device should never be more than once in m_requestQueues.
- * - A hash map (m_requestQueueHash) is kept in sync with m_requestQueues for
+ * - Each entry in requestQueues corresponds to a single device's request queue.
+ * A device should never be more than once in requestQueues.
+ * - A hash map (requestQueueHash) is kept in sync with requestQueues for
  * faster lookup in case a request queue is modified and needs to be
  * rescheduled.
  *
@@ -42,7 +43,8 @@ public class RequestQueueManager {
     private @Nullable Thread queueThread = null;
     private PriorityQueue<RequestQueue> requestQueues = new PriorityQueue<>();
     private HashMap<InsteonDevice, @Nullable RequestQueue> requestQueueHash = new HashMap<>();
-    private boolean keepRunning = true;
+    private volatile boolean keepRunning = true;
+    private AtomicBoolean paused = new AtomicBoolean(false);
 
     private RequestQueueManager() {
         queueThread = new Thread(new RequestQueueReader());
@@ -55,18 +57,24 @@ public class RequestQueueManager {
      * Add device to global request queue.
      *
      * @param dev the device to add
-     * @param time the time when the queue should be processed
+     * @param delay time (in milliseconds) to delay queue processing
+     * @param urgent if urgent device request
      */
-    public void addQueue(InsteonDevice dev, long time) {
+    public void addQueue(InsteonDevice dev, long delay, boolean urgent) {
         synchronized (requestQueues) {
+            long time = System.currentTimeMillis() + delay;
             RequestQueue q = requestQueueHash.get(dev);
             if (q == null) {
-                logger.trace("scheduling request for device {} in {} msec", dev.getAddress(),
-                        time - System.currentTimeMillis());
-                q = new RequestQueue(dev, time);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("scheduling request for device {} in {} msec, urgent: {}", dev.getAddress(),
+                            delay, urgent);
+                }
+                q = new RequestQueue(dev, time, urgent);
             } else {
-                logger.trace("queue for dev {} is already scheduled in {} msec", dev.getAddress(),
-                        q.getExpirationTime() - System.currentTimeMillis());
+                if (logger.isTraceEnabled()) {
+                    logger.trace("queue for dev {} is already scheduled in {} msec", dev.getAddress(),
+                            q.getExpirationTime() - System.currentTimeMillis());
+                }
                 if (!requestQueues.remove(q)) {
                     logger.warn("queue for {} should be there, report as bug!", dev);
                 }
@@ -85,13 +93,42 @@ public class RequestQueueManager {
     }
 
     /**
+     * Pause request queue thread
+     */
+    public void pause() {
+        if (logger.isDebugEnabled()) {
+            logger.debug("pausing request queue thread");
+        }
+        paused.set(true);
+        synchronized (requestQueues) {
+            requestQueues.notify();
+        }
+    }
+
+    /**
+     * Resume request queue thread
+     */
+    public void resume() {
+        if (logger.isDebugEnabled()) {
+            logger.debug("resuming request queue thread");
+        }
+        paused.set(false);
+        synchronized (paused) {
+            paused.notify();
+        }
+    }
+
+    /**
      * Stops request queue thread
      */
     private void stopThread() {
-        logger.debug("stopping thread");
+        logger.debug("stopping request queue thread");
         if (queueThread != null) {
+            keepRunning = false;
+            synchronized (paused) {
+                paused.notifyAll();
+            }
             synchronized (requestQueues) {
-                keepRunning = false;
                 requestQueues.notifyAll();
             }
             try {
@@ -110,50 +147,69 @@ public class RequestQueueManager {
         @Override
         public void run() {
             logger.debug("starting request queue thread");
-            synchronized (requestQueues) {
-                while (keepRunning) {
-                    try {
-                        while (keepRunning && !requestQueues.isEmpty()) {
-                            RequestQueue q = requestQueues.peek();
-                            long now = System.currentTimeMillis();
-                            long expTime = q.getExpirationTime();
-                            InsteonDevice dev = q.getDevice();
-                            if (expTime > now) {
-                                //
-                                // The head of the queue is not up for processing yet, wait().
-                                //
+            while (keepRunning) {
+                try {
+                    synchronized (paused) {
+                        if (paused.get()) {
+                            if (logger.isTraceEnabled()) {
+                                logger.trace("waiting for request queue thread to resume");
+                            }
+                            paused.wait();
+                            continue;
+                        }
+                    }
+                    synchronized (requestQueues) {
+                        if (requestQueues.isEmpty()) {
+                            if (logger.isTraceEnabled()) {
+                                logger.trace("waiting for request queues to fill");
+                            }
+                            requestQueues.wait();
+                            continue;
+                        }
+                        RequestQueue q = requestQueues.peek();
+                        long now = System.currentTimeMillis();
+                        long expTime = q.getExpirationTime();
+                        InsteonDevice dev = q.getDevice();
+                        if (expTime > now) {
+                            //
+                            // The head of the queue is not up for processing yet, wait().
+                            //
+                            if (logger.isTraceEnabled()) {
                                 logger.trace("request queue head: {} must wait for {} msec", dev.getAddress(),
                                         expTime - now);
-                                requestQueues.wait(expTime - now);
-                                //
-                                // note that the wait() can also return because of changes to
-                                // the queue, not just because the time expired!
-                                //
-                                continue;
                             }
+                            requestQueues.wait(expTime - now);
                             //
-                            // The head of the queue has expired and can be processed!
+                            // note that the wait() can also return because of changes to
+                            // the queue, not just because the time expired!
                             //
-                            q = requestQueues.poll(); // remove front element
-                            requestQueueHash.remove(dev); // and remove from hash map
-                            long nextExp = dev.processRequestQueue(now);
-                            if (nextExp > 0) {
-                                q = new RequestQueue(dev, nextExp);
-                                requestQueues.add(q);
-                                requestQueueHash.put(dev, q);
+                            continue;
+                        }
+                        //
+                        // The head of the queue has expired and can be processed!
+                        //
+                        q = requestQueues.poll(); // remove front element
+                        requestQueueHash.remove(dev); // and remove from hash map
+                        boolean urgent = q.isUrgent();
+                        long nextExp = dev.processRequestQueue(now);
+                        if (nextExp > 0) {
+                            q = new RequestQueue(dev, nextExp, urgent);
+                            requestQueues.add(q);
+                            requestQueueHash.put(dev, q);
+                            if (logger.isTraceEnabled()) {
                                 logger.trace("device queue for {} rescheduled in {} msec", dev.getAddress(),
                                         nextExp - now);
-                            } else {
-                                // remove from hash since queue is no longer scheduled
+                            }
+                        } else {
+                            // remove from hash since queue is no longer scheduled
+                            if (logger.isDebugEnabled()) {
                                 logger.debug("device queue for {} is empty!", dev.getAddress());
                             }
                         }
-                        logger.trace("waiting for request queues to fill");
-                        requestQueues.wait();
-                    } catch (InterruptedException e) {
-                        logger.warn("request queue thread got interrupted, breaking..", e);
-                        break;
                     }
+                } catch (InterruptedException e) {
+                    logger.warn("request queue thread got interrupted, breaking.", e);
+                    break;
                 }
             }
             logger.debug("exiting request queue thread!");
@@ -164,10 +220,12 @@ public class RequestQueueManager {
     public static class RequestQueue implements Comparable<RequestQueue> {
         private InsteonDevice device;
         private long expirationTime;
+        private boolean urgent;
 
-        RequestQueue(InsteonDevice dev, long expirationTime) {
+        RequestQueue(InsteonDevice dev, long expirationTime, boolean urgent) {
             this.device = dev;
             this.expirationTime = expirationTime;
+            this.urgent = urgent;
         }
 
         public InsteonDevice getDevice() {
@@ -182,9 +240,19 @@ public class RequestQueueManager {
             expirationTime = t;
         }
 
+        public boolean isUrgent() {
+            return urgent;
+        }
+
         @Override
         public int compareTo(RequestQueue a) {
-            return (int) (expirationTime - a.expirationTime);
+            if (!urgent && a.urgent) {
+                return 1;
+            } else if (urgent && !a.urgent) {
+                return -1;
+            } else {
+                return (int) (expirationTime - a.expirationTime);
+            }
         }
     }
 

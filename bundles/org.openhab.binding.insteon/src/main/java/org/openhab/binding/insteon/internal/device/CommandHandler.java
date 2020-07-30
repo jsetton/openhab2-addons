@@ -12,12 +12,18 @@
  */
 package org.openhab.binding.insteon.internal.device;
 
+import static org.openhab.binding.insteon.internal.InsteonBindingConstants.*;
+
 import java.lang.reflect.InvocationTargetException;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
+
+import javax.measure.Unit;
+import javax.measure.quantity.Dimensionless;
+import javax.measure.quantity.Temperature;
+import javax.measure.quantity.Time;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -25,14 +31,23 @@ import org.eclipse.smarthome.core.library.types.DecimalType;
 import org.eclipse.smarthome.core.library.types.IncreaseDecreaseType;
 import org.eclipse.smarthome.core.library.types.OnOffType;
 import org.eclipse.smarthome.core.library.types.PercentType;
+import org.eclipse.smarthome.core.library.types.QuantityType;
+import org.eclipse.smarthome.core.library.types.StopMoveType;
+import org.eclipse.smarthome.core.library.types.StringType;
+import org.eclipse.smarthome.core.library.types.UpDownType;
+import org.eclipse.smarthome.core.library.unit.ImperialUnits;
+import org.eclipse.smarthome.core.library.unit.SmartHomeUnits;
+import org.eclipse.smarthome.core.library.unit.SIUnits;
 import org.eclipse.smarthome.core.types.Command;
+import org.eclipse.smarthome.core.types.State;
 import org.openhab.binding.insteon.internal.config.InsteonChannelConfiguration;
 import org.openhab.binding.insteon.internal.device.DeviceFeatureListener.StateChangeType;
-import org.openhab.binding.insteon.internal.handler.InsteonDeviceHandler;
 import org.openhab.binding.insteon.internal.message.FieldException;
 import org.openhab.binding.insteon.internal.message.InvalidMessageTypeException;
 import org.openhab.binding.insteon.internal.message.Msg;
-import org.openhab.binding.insteon.internal.utils.Utils;
+import org.openhab.binding.insteon.internal.utils.BitwiseUtils;
+import org.openhab.binding.insteon.internal.utils.ByteUtils;
+import org.openhab.binding.insteon.internal.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,25 +57,31 @@ import org.slf4j.LoggerFactory;
  * @author Daniel Pfrommer - Initial contribution
  * @author Bernd Pfrommer - openHAB 1 insteonplm binding
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @SuppressWarnings("null")
-public abstract class CommandHandler {
+public abstract class CommandHandler extends FeatureBaseHandler {
     private static final Logger logger = LoggerFactory.getLogger(CommandHandler.class);
-    DeviceFeature feature; // related DeviceFeature
-    @Nullable
-    Map<String, @Nullable String> parameters = new HashMap<>();
 
     /**
      * Constructor
      *
-     * @param feature The DeviceFeature for which this command was intended.
+     * @param f The DeviceFeature for which this command was intended.
      *            The openHAB commands are issued on an openhab item. The .items files bind
      *            an openHAB item to a DeviceFeature.
      */
-    CommandHandler(DeviceFeature feature) {
-        this.feature = feature;
+    CommandHandler(DeviceFeature f) {
+        super(f);
     }
+
+    /**
+     * Returns if handler can handle the openHAB command received
+     *
+     * @param  cmd the openhab command received
+     * @return true if can handle
+     */
+    public abstract boolean canHandle(Command cmd);
 
     /**
      * Implements what to do when an openHAB command is received
@@ -69,98 +90,26 @@ public abstract class CommandHandler {
      * @param cmd the openhab command issued
      * @param device the Insteon device to which this command applies
      */
-    public abstract void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice device);
+    public abstract void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev);
+
+    //
+    //
+    // ---------------- the various command handlers start here -------------------
+    //
+    //
 
     /**
-     * Returns parameter as integer
-     *
-     * @param key key of parameter
-     * @param def default
-     * @return value of parameter
+     * Warn command handler
      */
-    protected int getIntParameter(String key, int def) {
-        String val = parameters.get(key);
-        if (val == null) {
-            return (def); // param not found
-        }
-        int ret = def;
-        try {
-            ret = Utils.strToInt(val);
-        } catch (NumberFormatException e) {
-            logger.warn("malformed int parameter in command handler: {}", key);
-        }
-        return ret;
-    }
-
-    /**
-     * Returns parameter as String
-     *
-     * @param key key of parameter
-     * @param def default
-     * @return value of parameter
-     */
-    protected @Nullable String getStringParameter(String key, String def) {
-        return (parameters.get(key) == null ? def : parameters.get(key));
-    }
-
-    /**
-     * Shorthand to return class name for logging purposes
-     *
-     * @return name of the class
-     */
-    protected String nm() {
-        return (this.getClass().getSimpleName());
-    }
-
-    protected int getMaxLightLevel(InsteonChannelConfiguration conf, int defaultLevel) {
-        Map<String, @Nullable String> params = conf.getParameters();
-        if (conf.getFeature().contains("dimmer") && params.containsKey("dimmermax")) {
-            String item = conf.getChannelName();
-            String dimmerMax = params.get("dimmermax");
-            try {
-                int i = Integer.parseInt(dimmerMax);
-                if (i > 1 && i <= 99) {
-                    int level = (int) Math.ceil((i * 255.0) / 100); // round up
-                    if (level < defaultLevel) {
-                        logger.debug("item {}: using dimmermax value of {}", item, dimmerMax);
-                        return level;
-                    }
-                } else {
-                    logger.warn("item {}: dimmermax must be between 1-99 inclusive: {}", item, dimmerMax);
-                }
-            } catch (NumberFormatException e) {
-                logger.warn("item {}: invalid int value for dimmermax: {}", item, dimmerMax);
-            }
-        }
-
-        return defaultLevel;
-    }
-
-    void setParameters(Map<String, @Nullable String> map) {
-        parameters = map;
-    }
-
-    /**
-     * Helper function to extract the group parameter from the binding config,
-     *
-     * @param c the binding configuration to test
-     * @return the value of the "group" parameter, or -1 if none
-     */
-    protected static int getGroup(InsteonChannelConfiguration c) {
-        String v = c.getParameters().get("group");
-        int iv = -1;
-        try {
-            iv = (v == null) ? -1 : Utils.strToInt(v);
-        } catch (NumberFormatException e) {
-            logger.warn("malformed int parameter in for item {}", c.getChannelName());
-        }
-        return iv;
-    }
-
     @NonNullByDefault
     public static class WarnCommandHandler extends CommandHandler {
         WarnCommandHandler(DeviceFeature f) {
             super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return true;
         }
 
         @Override
@@ -169,10 +118,18 @@ public abstract class CommandHandler {
         }
     }
 
+    /**
+     * No-op command handler
+     */
     @NonNullByDefault
     public static class NoOpCommandHandler extends CommandHandler {
         NoOpCommandHandler(DeviceFeature f) {
             super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return true;
         }
 
         @Override
@@ -181,44 +138,376 @@ public abstract class CommandHandler {
         }
     }
 
+    /**
+     * Custom abstract command handler based of parameters
+     */
     @NonNullByDefault
-    public static class LightOnOffCommandHandler extends CommandHandler {
-        LightOnOffCommandHandler(DeviceFeature f) {
+    public abstract static class CustomCommandHandler extends CommandHandler {
+        CustomCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            int cmd1 = getIntParameter("cmd1", -1);
+            int cmd2 = getIntParameter("cmd2", 0);
+            int ext = getIntParameter("ext", 0);
+            if (cmd1 == -1) {
+                logger.warn("{}: handler misconfigured, no cmd1 parameter specified", nm());
+                return;
+            }
+            // determine data field based on parameter, default to cmd2 if is standard message
+            String field = getStringParameter("field", ext == 0 ? "command2" : "");
+            if (field == "") {
+                logger.warn("{}: handler misconfigured, no field parameter specified", nm());
+                return;
+            }
+            // determine cmd value and apply factor ratio based of parameters
+            int value = (int) Math.round(getValue(cmd) * getIntParameter("factor", 1));
+            if (value == -1) {
+                logger.debug("{}: unable to determine command value, ignoring request", nm());
+                return;
+            }
+            try {
+                Msg m = null;
+                if (ext == 1 || ext == 2) {
+                    // set userData1 to d1 parameter if defined, fallback to group parameter
+                    byte[] data = { (byte) getIntParameter("d1", getIntParameter("group", 0)),
+                            (byte) getIntParameter("d2", 0), (byte) getIntParameter("d3", 0) };
+                    m = dev.makeExtendedMessage((byte) 0x1F, (byte) cmd1, (byte) cmd2, data);
+                } else {
+                    m = dev.makeStandardMessage((byte) 0x0F, (byte) cmd1, (byte) cmd2);
+                }
+                // set field to clamped byte-size value
+                m.setByte(field, (byte) Math.min(value, 0xFF));
+                // update crc based on message type and device Insteon engine checksum support
+                if (ext == 1 && dev.getInsteonEngine().supportsChecksum()) {
+                    m.setCRC();
+                } else if (ext == 2) {
+                    m.setCRC2();
+                }
+                dev.enqueueRequest(m, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent {} {} request to {}", nm(), feature.getName(),
+                            ByteUtils.getHexString(value), dev.getAddress());
+                }
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            }
+        }
+
+        public abstract double getValue(Command cmd);
+    }
+
+    /**
+     * Custom bitmask command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomBitmaskCommandHandler extends CustomCommandHandler {
+        CustomBitmaskCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof OnOffType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            return getBitmask(cmd);
+        }
+
+        public int getBitNumber() {
+            return getIntParameter("bit", -1);
+        }
+
+        public boolean shouldSetBit(Command cmd) {
+            return cmd == OnOffType.ON ^ getBooleanParameter("inverted", false);
+        }
+
+        public int getBitmask(Command cmd) {
+            // get bit number based on parameter
+            int bit = getBitNumber();
+            // get last bitmask message value received by this feature
+            int bitmask = feature.getIntLastMsgValue(-1);
+            // update last bitmask value specific bit based on cmd state, if defined and bit number valid (1-7)
+            if (bit < 1 || bit > 7) {
+                logger.warn("{}: incorrect bit number {} for feature {}", nm(), bit, feature.getName());
+            } else if (bitmask == -1) {
+                logger.debug("{}: unable to determine last bit mask for feature {}", nm(), feature.getName());
+            } else {
+                boolean shouldSetBit = shouldSetBit(cmd);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("{}: bitmask:{} bit:{} set:{}", nm(), ByteUtils.getBinaryString(bitmask), bit,
+                            shouldSetBit);
+                }
+                return shouldSetBit ? BitwiseUtils.setBitFlag(bitmask, bit) : BitwiseUtils.clearBitFlag(bitmask, bit);
+            }
+            return -1;
+        }
+    }
+
+
+    /**
+     * Custom on/off type command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomOnOffCommandHandler extends CustomCommandHandler {
+        CustomOnOffCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof OnOffType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            return cmd == OnOffType.ON ? getIntParameter("on", 0xFF) : getIntParameter("off", 0x00);
+        }
+    }
+
+
+    /**
+     * Custom decimal type command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomDecimalCommandHandler extends CustomCommandHandler {
+        CustomDecimalCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof DecimalType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            return ((DecimalType) cmd).doubleValue();
+        }
+    }
+
+    /**
+     * Custom percent type command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomPercentCommandHandler extends CustomCommandHandler {
+        CustomPercentCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof PercentType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            int minValue = getIntParameter("min", 0x00);
+            int maxValue = getIntParameter("max", 0xFF);
+            double value = ((PercentType) cmd).doubleValue();
+            return Math.round(value * (maxValue - minValue) / 100.0) + minValue;
+        }
+    }
+
+    /**
+     * Custom dimensionless quantity type command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomDimensionlessCommandHandler extends CustomCommandHandler {
+        CustomDimensionlessCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof QuantityType;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public double getValue(Command cmd) {
+          int minValue = getIntParameter("min", 0);
+          int maxValue = getIntParameter("max", 100);
+          double value = ((QuantityType<Dimensionless>) cmd).doubleValue();
+          return Math.round(value * (maxValue - minValue) / 100.0) + minValue;
+        }
+    }
+
+    /**
+     * Custom temperature quantity type command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomTemperatureCommandHandler extends CustomCommandHandler {
+        CustomTemperatureCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof QuantityType;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public double getValue(Command cmd) {
+            QuantityType<Temperature> temperature = (QuantityType<Temperature>) cmd;
+            Unit<Temperature> unit = getTemperatureUnit();
+            double value = temperature.toUnit(unit).doubleValue();
+            double increment = unit == SIUnits.CELSIUS ? 0.5 : 1;
+            return Math.round(value / increment) * increment; // round in increment based on temperature unit
+        }
+
+        private Unit<Temperature> getTemperatureUnit() {
+            String scale = getStringParameter("scale", "");
+            switch (scale) {
+                case "celsius":
+                    return SIUnits.CELSIUS;
+                case "fahrenheit":
+                    return ImperialUnits.FAHRENHEIT;
+                default:
+                    logger.debug("{}: no valid temperature scale parameter found, defaulting to: CELSIUS", nm());
+                    return SIUnits.CELSIUS;
+            }
+        }
+    }
+
+    /**
+     * Custom time quantity type command handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomTimeCommandHandler extends CustomCommandHandler {
+        CustomTimeCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof QuantityType;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public double getValue(Command cmd) {
+            QuantityType<Time> time = (QuantityType<Time>) cmd;
+            Unit<Time> unit = getTimeUnit();
+            return time.toUnit(unit).doubleValue();
+        }
+
+        private Unit<Time> getTimeUnit() {
+            String scale = getStringParameter("scale", "");
+            switch (scale) {
+                case "hour":
+                    return SmartHomeUnits.HOUR;
+                case "minute":
+                    return SmartHomeUnits.MINUTE;
+                case "second":
+                    return SmartHomeUnits.SECOND;
+                default:
+                    logger.debug("{}: no valid time scale parameter found, defaulting to: SECONDS", nm());
+                    return SmartHomeUnits.SECOND;
+            }
+        }
+    }
+
+    /**
+     * Generic on/off command handler
+     */
+    @NonNullByDefault
+    public static class OnOffCommandHandler extends CommandHandler {
+        OnOffCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof OnOffType;
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            try {
+                int cmd1 = getCommandCode(conf, cmd);
+                int level = getLevel(conf, cmd);
+                int group = getGroup(conf);
+                if (level != -1) {
+                    Msg m = dev.makeStandardMessage((byte) 0x0F, (byte) cmd1, (byte) level, group);
+                    dev.enqueueRequest(m, feature);
+                    if (m.isBroadcast()) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("{}: sent broadcast {} request to group {}", nm(), cmd, group);
+                        }
+                        updateRelatedStates(conf, cmd, true);
+                    } else {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("{}: sent {} request to {}", nm(), cmd, dev.getAddress());
+                        }
+                        updateRelatedStates(conf, cmd, false);
+                    }
+                }
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            }
+        }
+
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == OnOffType.ON ? getIntParameter("on", 0x11) : getIntParameter("off", 0x13);
+        }
+
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == OnOffType.ON && getGroup(conf) == -1 ? 0xFF : 0x00; // not parsed in broadcast request
+        }
+
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return -1;
+        }
+
+        public void updateRelatedStates(InsteonChannelConfiguration conf, Command cmd, boolean isBroadcast) {
+            if (isBroadcast) {
+                // poll this feature with delay to account for local changes
+                feature.triggerPoll(2000L);
+                // poll related devices for triggered channel
+                feature.pollRelatedDevices(conf.getChannelName());
+            } else {
+                // adjust related devices separately
+                //feature.adjustRelatedDevices(conf.getChannelName(), cmd);
+            }
+        }
+    }
+
+    /**
+     * Generic secondary functionality on/off command handler
+     */
+    @NonNullByDefault
+    public static class SecondaryOnOffCommandHandler extends OnOffCommandHandler {
+        SecondaryOnOffCommandHandler(DeviceFeature f) {
             super(f);
         }
 
         @Override
         public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
             try {
-                int ext = getIntParameter("ext", 0);
-                int direc = 0x00;
-                int level = 0x00;
-                Msg m = null;
-                if (cmd == OnOffType.ON) {
-                    level = getMaxLightLevel(conf, 0xff);
-                    direc = 0x11;
-                    logger.debug("{}: sent msg to switch {} to {}", nm(), dev.getAddress(),
-                            level == 0xff ? "on" : level);
-                } else if (cmd == OnOffType.OFF) {
-                    direc = 0x13;
-                    logger.debug("{}: sent msg to switch {} off", nm(), dev.getAddress());
-                }
-                if (ext == 1 || ext == 2) {
-                    byte[] data = new byte[] { (byte) getIntParameter("d1", 0), (byte) getIntParameter("d2", 0),
-                            (byte) getIntParameter("d3", 0) };
-                    m = dev.makeExtendedMessage((byte) 0x0f, (byte) direc, (byte) level, data);
-                    logger.debug("{}: was an extended message for device {}", nm(), dev.getAddress());
-                    if (ext == 1) {
-                        m.setCRC();
-                    } else if (ext == 2) {
-                        m.setCRC2();
+                int userData1 = getIntParameter("d1", -1);
+                // handle command only if d1 parameter defined in command handler
+                if (userData1 != -1) {
+                    int cmd1 = getCommandCode(conf, cmd);
+                    int level = getLevel(conf, cmd);
+                    byte[] data = { (byte) userData1, (byte) 0x00, (byte) 0x00 };
+                    Msg m = dev.makeExtendedMessage((byte) 0x1F, (byte) cmd1, (byte) level, data);
+                    dev.enqueueRequest(m, feature);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("{}: sent {} request to {}", nm(), cmd, dev.getAddress());
                     }
                 } else {
-                    m = dev.makeStandardMessage((byte) 0x0f, (byte) direc, (byte) level, getGroup(conf));
+                    logger.warn("{}: no d1 parameter specified in command handler", nm());
                 }
-                logger.debug("Sending message to {}", dev.getAddress());
-                dev.enqueueMessage(m, feature);
-                // expect to get a direct ack after this!
             } catch (InvalidMessageTypeException e) {
                 logger.warn("{}: invalid message: ", nm(), e);
             } catch (FieldException e) {
@@ -227,94 +516,510 @@ public abstract class CommandHandler {
         }
     }
 
+    /**
+     * Dimmer on/off command handler
+     */
     @NonNullByDefault
-    public static class FastOnOffCommandHandler extends CommandHandler {
+    public static class DimmerOnOffCommandHandler extends OnOffCommandHandler {
+        DimmerOnOffCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == OnOffType.ON ? 0x11 : 0x13;
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == OnOffType.ON && getGroup(conf) == -1 ? getOnLevel() : 0x00; // not parsed in broadcast request
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
+        }
+
+        @Override
+        public void updateRelatedStates(InsteonChannelConfiguration conf, Command cmd, boolean isBroadcast) {
+            super.updateRelatedStates(conf, cmd, isBroadcast);
+            // update dimmer state since set not to be automatically updated by the framework
+            updateState(conf, cmd);
+        }
+
+        public void updateState(InsteonChannelConfiguration conf, Command cmd) {
+            PercentType state = cmd == OnOffType.ON ? getOnLevelState() : PercentType.ZERO;
+            feature.publish(state, StateChangeType.ALWAYS);
+        }
+
+        private int getOnLevel() {
+            int value = getOnLevelState().intValue();
+            int level = (int) Math.ceil((value * 255.0) / 100); // round up
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}: using on level value of {}%", nm(), value);
+            }
+            return level;
+        }
+
+        private PercentType getOnLevelState() {
+            PercentType state = (PercentType) feature.getDevice().getLastState(ON_LEVEL_FEATURE);
+            return state != null ? state : PercentType.HUNDRED;
+        }
+    }
+
+    /**
+     * Dimmer percent command handler
+     */
+    @NonNullByDefault
+    public static class DimmerPercentCommandHandler extends DimmerOnOffCommandHandler {
+        DimmerPercentCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof PercentType;
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd != PercentType.ZERO ? 0x11 : 0x13;
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            int level = ((PercentType) cmd).intValue();
+            return (int) Math.ceil(level * 255.0 / 100); // round up
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return -1; // no support for broadcast request to specific level
+        }
+
+        @Override
+        public void updateState(InsteonChannelConfiguration conf, Command cmd) {
+            feature.publish((State) cmd, StateChangeType.ALWAYS);
+        }
+    }
+
+    /**
+     * Brigthen/dim command handler
+     */
+    @NonNullByDefault
+    public static class BrigthenDimCommandHandler extends DimmerOnOffCommandHandler {
+        BrigthenDimCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof IncreaseDecreaseType;
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == IncreaseDecreaseType.INCREASE ? 0x15 : 0x16;
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            return 0x00; // not parsed
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
+        }
+
+        @Override
+        public void updateState(InsteonChannelConfiguration conf, Command cmd) {
+            PercentType state = (PercentType) feature.getLastState();
+            if (state != null) {
+                // update last state by one step (32 steps from off to full brightness)
+                int delta = (int) Math.round((cmd == IncreaseDecreaseType.INCREASE ? 1 : -1) * 100 / 32.0);
+                int level = Math.max(0, Math.min(100, state.intValue() + delta));
+                feature.publish(new PercentType(level), StateChangeType.ALWAYS);
+            }
+        }
+    }
+
+    /**
+     * Rollershutter up/down command handler
+     */
+    @NonNullByDefault
+    public static class RollershutterUpDownCommandHandler extends OnOffCommandHandler {
+        RollershutterUpDownCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof UpDownType;
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return 0x17; // manual change start
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == UpDownType.UP ? 0x01 : 0x00; // up or down
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
+        }
+
+        @Override
+        public void updateRelatedStates(InsteonChannelConfiguration conf, Command cmd, boolean isBroadcast) {
+            // no need to update related states on up/down commands
+        }
+    }
+
+    /**
+     * Rollershutter stop command handler
+     */
+    @NonNullByDefault
+    public static class RollershutterStopCommandHandler extends OnOffCommandHandler {
+        RollershutterStopCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd == StopMoveType.STOP;
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return 0x18; // manual change stop
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            return 0x00; // not parsed
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
+        }
+    }
+
+    /**
+     * Switch on/off command handler
+     */
+    @NonNullByDefault
+    public static class SwitchOnOffCommandHandler extends OnOffCommandHandler {
+        SwitchOnOffCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == OnOffType.ON ? 0x11 : 0x13;
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
+        }
+    }
+
+    /**
+     * Fast on/off command handler
+     */
+    @NonNullByDefault
+    public static class FastOnOffCommandHandler extends OnOffCommandHandler {
         FastOnOffCommandHandler(DeviceFeature f) {
             super(f);
         }
 
         @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                if (cmd == OnOffType.ON) {
-                    int level = getMaxLightLevel(conf, 0xff);
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x12, (byte) level, getGroup(conf));
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent fast on to switch {} level {}", nm(), dev.getAddress(),
-                            level == 0xff ? "on" : level);
-                } else if (cmd == OnOffType.OFF) {
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x14, (byte) 0x00, getGroup(conf));
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent fast off to switch {}", nm(), dev.getAddress());
-                }
-                // expect to get a direct ack after this!
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class RampOnOffCommandHandler extends RampCommandHandler {
-        RampOnOffCommandHandler(DeviceFeature f) {
-            super(f);
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            return cmd == OnOffType.ON ? 0x12 : 0x14;
         }
 
         @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                if (cmd == OnOffType.ON) {
-                    double ramptime = getRampTime(conf, 0);
-                    int ramplevel = getRampLevel(conf, 100);
-                    byte cmd2 = encode(ramptime, ramplevel);
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, getOnCmd(), cmd2, getGroup(conf));
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent ramp on to switch {} time {} level {} cmd1 {}", nm(), dev.getAddress(),
-                            ramptime, ramplevel, getOnCmd());
-                } else if (cmd == OnOffType.OFF) {
-                    double ramptime = getRampTime(conf, 0);
-                    int ramplevel = getRampLevel(conf, 0 /* ignored */);
-                    byte cmd2 = encode(ramptime, ramplevel);
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, getOffCmd(), cmd2, getGroup(conf));
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent ramp off to switch {} time {} cmd1 {}", nm(), dev.getAddress(), ramptime,
-                            getOffCmd());
-                }
-                // expect to get a direct ack after this!
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            return 0x00; // not parsed
         }
 
-        private int getRampLevel(InsteonChannelConfiguration conf, int defaultValue) {
-            Map<String, @Nullable String> params = conf.getParameters();
-            return params.containsKey("ramplevel") ? Integer.parseInt(params.get("ramplevel")) : defaultValue;
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
         }
     }
 
+    /**
+     * Manual change command handler
+     */
     @NonNullByDefault
-    public static class ManualChangeCommandHandler extends CommandHandler {
+    public static class ManualChangeCommandHandler extends OnOffCommandHandler {
         ManualChangeCommandHandler(DeviceFeature f) {
             super(f);
         }
 
         @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            String action = ((StringType) cmd).toString();
+            return action.equals("STOP") ? 0x18 : 0x17; // stop or start
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            String direction = ((StringType) cmd).toString();
+            return direction.equals("BRIGHTEN") ? 0x01 : 0x00; // brighten or dim
+        }
+
+        @Override
+        public int getGroup(InsteonChannelConfiguration conf) {
+            return conf.getBroadcastGroup();
+        }
+
+        @Override
+        public void updateRelatedStates(InsteonChannelConfiguration conf, Command cmd, boolean isBroadcast) {
+            String action = ((StringType) cmd).toString();
+            // only update related states on manual change stop action
+            if (action.equals("STOP")) {
+                super.updateRelatedStates(conf, cmd, isBroadcast);
+            }
+        }
+    }
+
+    /**
+     * Broadcast on/off command handler
+     */
+    @NonNullByDefault
+    public static class BroadcastOnOffCommandHandler extends SwitchOnOffCommandHandler {
+        BroadcastOnOffCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            if (conf.getBroadcastGroup() != -1) {
+                super.handleCommand(conf, cmd, dev);
+            } else {
+                logger.warn("{}: unable to determine broadcast group on channel {}", nm(), conf.getChannelName());
+            }
+        }
+    }
+
+    /**
+     * Keypad bitmask command handler
+     */
+    @NonNullByDefault
+    public static class KeypadBitmaskCommandHandler extends CustomBitmaskCommandHandler {
+        KeypadBitmaskCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public int getBitNumber() {
+            return getIntParameter("group", -1) - 1;
+        }
+    }
+
+    /**
+     * Keypad button command handler
+     */
+    @NonNullByDefault
+    public static class KeypadButtonCommandHandler extends SwitchOnOffCommandHandler {
+        KeypadButtonCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            if (cmd == OnOffType.OFF && isAlwaysOnToggle()) {
+                // ignore off command when keypad button toggle mode is always on
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: {} toggle mode is always on, ignoring off command", nm(), feature.getName());
+                }
+                // reset to last state if defined, defaulting to on state
+                State state = feature.getLastState() == null ? OnOffType.ON : feature.getLastState();
+                feature.publish(state, StateChangeType.ALWAYS);
+            } else if (conf.getBooleanParameter("ledOnly", false)) {
+                // set led button if "ledOnly" channel config parameter is set
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: setting led button state only", nm());
+                }
+                setLEDButton(conf, cmd, dev);
+            } else if (conf.getBroadcastGroup() == -1) {
+                // set led button if broadcast group not defined, as fallback
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: unable to determine broadcast group, setting led button state instead", nm());
+                }
+                setLEDButton(conf, cmd, dev);
+            } else {
+                // handle standard button command based on broadcast group
+                super.handleCommand(conf, cmd, dev);
+            }
+        }
+
+        protected String getButtonSuffix() {
+            return StringUtils.capitalize(feature.getName()); // e.g. "buttonA" => "ButtonA"
+        }
+
+        private boolean isAlwaysOnToggle() {
+            State toggleMode = feature.getDevice().getLastState(
+                    KEYPAD_TOGGLE_MODE_FEATURE + getButtonSuffix());
+            return toggleMode == OnOffType.OFF; // always on when toggle mode off
+        }
+
+        private void setLEDButton(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            KeypadLEDButtonCommandHandler handler = new KeypadLEDButtonCommandHandler(feature);
+            handler.addParameters(parameters);
+            handler.handleCommand(conf, cmd, dev);
+        }
+
+        @NonNullByDefault
+        private class KeypadLEDButtonCommandHandler extends KeypadBitmaskCommandHandler {
+            KeypadLEDButtonCommandHandler(DeviceFeature f) {
+                super(f);
+            }
+
+            @Override
+            public int getBitmask(Command cmd) {
+                int bitmask = super.getBitmask(cmd);
+                if (bitmask != -1) {
+                    int onMask = feature.getDevice().getIntLastMsgValue(
+                            KEYPAD_ON_MASK_FEATURE + getButtonSuffix(), 0);
+                    int offMask = feature.getDevice().getIntLastMsgValue(
+                            KEYPAD_OFF_MASK_FEATURE + getButtonSuffix(), 0);
+                    if (logger.isTraceEnabled()) {
+                        logger.trace("{}: bitmask:{} onMask:{} offMask:{}", nm(), ByteUtils.getBinaryString(bitmask),
+                                ByteUtils.getBinaryString(onMask), ByteUtils.getBinaryString(offMask));
+                    }
+                    // apply keypad button on/off mask (radio group support)
+                    bitmask &= ~offMask | onMask;
+                }
+                return bitmask;
+            }
+        }
+    }
+
+    /**
+     * Keypad button config command handler
+     */
+    @NonNullByDefault
+    public static class KeypadButtonConfigCommandHandler extends CustomCommandHandler {
+        KeypadButtonConfigCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            String config = ((StringType) cmd).toString();
+            switch (config) {
+                case "8-BUTTON":
+                    return 0x06;
+                case "6-BUTTON":
+                    return 0x07;
+                default:
+                    logger.warn("{}: got unexpected button config command: {}, defaulting to: 6-BUTTON", nm(), config);
+                    return 0x07;
+            }
+        }
+    }
+
+    /**
+     * LED brightness command handler
+     */
+    @NonNullByDefault
+    public static class LEDBrightnessCommandHandler extends CommandHandler {
+        LEDBrightnessCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof OnOffType || cmd instanceof PercentType;
+        }
+
+        @Override
         public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
             try {
-                if (cmd instanceof DecimalType) {
-                    int v = ((DecimalType) cmd).intValue();
-                    int cmd1 = (v != 1) ? 0x17 : 0x18; // start or stop
-                    int cmd2 = (v == 2) ? 0x01 : 0; // up or down
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) cmd1, (byte) cmd2, getGroup(conf));
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: cmd {} sent manual change {} {} to {}", nm(), v,
-                            (cmd1 == 0x17) ? "START" : "STOP", (cmd2 == 0x01) ? "UP" : "DOWN", dev.getAddress());
+                int level = getLevel(cmd);
+                int userData2 = getIntParameter("d2", -1);
+                if (userData2 != -1) {
+                    // set led brightness level
+                    byte[] data = { (byte) 0x01, (byte) userData2, (byte) level };
+                    Msg m = dev.makeExtendedMessage((byte) 0x1F, (byte) 0x2E, (byte) 0x00, data);
+                    dev.enqueueRequest(m, feature);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("{}: sent led brightness level {} request to {}", nm(),
+                                ByteUtils.getHexString(level), dev.getAddress());
+                    }
+                    // turn on/off led, using relevant feature if available
+                    DeviceFeature f = dev.getFeature(LED_ON_OFF_FEATURE);
+                    if (f != null) {
+                        f.handleCommand(conf, level > 0 ? OnOffType.ON : OnOffType.OFF);
+                    }
                 } else {
-                    logger.warn("{}: invalid command type: {}", nm(), cmd);
+                    logger.warn("{}: no d2 parameter specified in command handler", nm());
+                }
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            }
+        }
+
+        private int getLevel(Command cmd) {
+            int level;
+            if (cmd instanceof OnOffType) {
+              level = cmd == OnOffType.OFF ? 0 : 100;
+            } else if (cmd instanceof PercentType) {
+              level = ((PercentType) cmd).intValue();
+            } else {
+              level = 50; // default 50% brightness
+              logger.warn("{}: got unexpected command type, defaulting to {}%", nm(), level);
+            }
+            return (int) Math.round(level * getIntParameter("max", 0xFF) / 100.0);
+        }
+    }
+
+    /**
+     * Momentary on command handler
+     */
+    @NonNullByDefault
+    public static class MomentaryOnCommandHandler extends CommandHandler {
+        MomentaryOnCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd == OnOffType.ON;
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            try {
+                int cmd1 = getIntParameter("cmd1", -1);
+                if (cmd1 != -1) {
+                    Msg m = dev.makeStandardMessage((byte) 0x0F, (byte) cmd1, (byte) 0x00);
+                    dev.enqueueRequest(m, feature);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("{}: sent {} request to {}", nm(), feature.getName(), dev.getAddress());
+                    }
+                } else {
+                    logger.warn("{}: no cmd1 field specified", nm());
                 }
             } catch (InvalidMessageTypeException e) {
                 logger.warn("{}: invalid message: ", nm(), e);
@@ -325,353 +1030,113 @@ public abstract class CommandHandler {
     }
 
     /**
-     * Sends ALLLink broadcast commands to group
+     * Operating flags command handler
      */
     @NonNullByDefault
-    public static class GroupBroadcastCommandHandler extends CommandHandler {
-        GroupBroadcastCommandHandler(DeviceFeature f) {
+    public static class OpFlagsCommandHandler extends CustomOnOffCommandHandler {
+        OpFlagsCommandHandler(DeviceFeature f) {
             super(f);
         }
 
         @Override
         public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                if (cmd == OnOffType.ON || cmd == OnOffType.OFF) {
-                    byte cmd1 = (byte) ((cmd == OnOffType.ON) ? 0x11 : 0x13);
-                    byte value = (byte) ((cmd == OnOffType.ON) ? 0xFF : 0x00);
-                    int group = getGroup(conf);
-                    if (group == -1) {
-                        logger.warn("no group=xx specified in item {}", conf.getChannelName());
-                        return;
-                    }
-                    logger.debug("{}: sending {} broadcast to group {}", nm(), (cmd1 == 0x11) ? "ON" : "OFF",
-                            getGroup(conf));
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, cmd1, value, group);
-                    dev.enqueueMessage(m, feature);
-                    feature.pollRelatedDevices();
-                }
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class LEDOnOffCommandHandler extends CommandHandler {
-        LEDOnOffCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                if (cmd == OnOffType.ON) {
-                    Msg m = dev.makeExtendedMessage((byte) 0x1f, (byte) 0x20, (byte) 0x09,
-                            new byte[] { (byte) 0x00, (byte) 0x00, (byte) 0x00 });
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to switch {} on", nm(), dev.getAddress());
-                } else if (cmd == OnOffType.OFF) {
-                    Msg m = dev.makeExtendedMessage((byte) 0x1f, (byte) 0x20, (byte) 0x08,
-                            new byte[] { (byte) 0x00, (byte) 0x00, (byte) 0x00 });
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to switch {} off", nm(), dev.getAddress());
-                }
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class X10OnOffCommandHandler extends CommandHandler {
-        X10OnOffCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                byte houseCode = dev.getX10HouseCode();
-                byte houseUnitCode = (byte) (houseCode << 4 | dev.getX10UnitCode());
-                if (cmd == OnOffType.ON || cmd == OnOffType.OFF) {
-                    byte houseCommandCode = (byte) (houseCode << 4
-                            | (cmd == OnOffType.ON ? X10.Command.ON.code() : X10.Command.OFF.code()));
-                    Msg munit = dev.makeX10Message(houseUnitCode, (byte) 0x00); // send unit code
-                    dev.enqueueMessage(munit, feature);
-                    Msg mcmd = dev.makeX10Message(houseCommandCode, (byte) 0x80); // send command code
-                    dev.enqueueMessage(mcmd, feature);
-                    String onOff = cmd == OnOffType.ON ? "ON" : "OFF";
-                    logger.debug("{}: sent msg to switch {} {}", nm(), dev.getAddress(), onOff);
-                }
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class X10PercentCommandHandler extends CommandHandler {
-        X10PercentCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                //
-                // I did not have hardware that would respond to the PRESET_DIM codes.
-                // This code path needs testing.
-                //
-                byte houseCode = dev.getX10HouseCode();
-                byte houseUnitCode = (byte) (houseCode << 4 | dev.getX10UnitCode());
-                Msg munit = dev.makeX10Message(houseUnitCode, (byte) 0x00); // send unit code
-                dev.enqueueMessage(munit, feature);
-                PercentType pc = (PercentType) cmd;
-                logger.debug("{}: changing level of {} to {}", nm(), dev.getAddress(), pc.intValue());
-                int level = (pc.intValue() * 32) / 100;
-                byte cmdCode = (level >= 16) ? X10.Command.PRESET_DIM_2.code() : X10.Command.PRESET_DIM_1.code();
-                level = level % 16;
-                if (level <= 0) {
-                    level = 0;
-                }
-                houseCode = (byte) x10CodeForLevel[level];
-                cmdCode |= (houseCode << 4);
-                Msg mcmd = dev.makeX10Message(cmdCode, (byte) 0x80); // send command code
-                dev.enqueueMessage(mcmd, feature);
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
+            super.handleCommand(conf, cmd, dev);
+            // update op flag last state if not retrievable (e.g. stayAwake)
+            if (!isStateRetrievable()) {
+                feature.publish((State) cmd, StateChangeType.ALWAYS);
             }
         }
 
-        private final int[] x10CodeForLevel = { 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 };
+        private boolean isStateRetrievable() {
+            // op flag state is retrieved if a valid bit (0-7) parameter is defined
+            int bit = getIntParameter("bit", -1);
+            return bit >= 0 && bit <= 7;
+        }
+
     }
 
+    /**
+     * Ramp abstract command handler
+     */
     @NonNullByDefault
-    public static class X10IncreaseDecreaseCommandHandler extends CommandHandler {
-        X10IncreaseDecreaseCommandHandler(DeviceFeature f) {
-            super(f);
-        }
+    public abstract static class RampCommandHandler extends CommandHandler {
 
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                byte houseCode = dev.getX10HouseCode();
-                byte houseUnitCode = (byte) (houseCode << 4 | dev.getX10UnitCode());
-                if (cmd == IncreaseDecreaseType.INCREASE || cmd == IncreaseDecreaseType.DECREASE) {
-                    byte houseCommandCode = (byte) (houseCode << 4
-                            | (cmd == IncreaseDecreaseType.INCREASE ? X10.Command.BRIGHT.code()
-                                    : X10.Command.DIM.code()));
-                    Msg munit = dev.makeX10Message(houseUnitCode, (byte) 0x00); // send unit code
-                    dev.enqueueMessage(munit, feature);
-                    Msg mcmd = dev.makeX10Message(houseCommandCode, (byte) 0x80); // send command code
-                    dev.enqueueMessage(mcmd, feature);
-                    String bd = cmd == IncreaseDecreaseType.INCREASE ? "BRIGHTEN" : "DIM";
-                    logger.debug("{}: sent msg to switch {} {}", nm(), dev.getAddress(), bd);
-                }
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class IOLincOnOffCommandHandler extends CommandHandler {
-        IOLincOnOffCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                if (cmd == OnOffType.ON) {
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x11, (byte) 0xff);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to switch {} on", nm(), dev.getAddress());
-                } else if (cmd == OnOffType.OFF) {
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x13, (byte) 0x00);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to switch {} off", nm(), dev.getAddress());
-                }
-                // This used to be configurable, but was made static to make
-                // the architecture of the binding cleaner.
-                int delay = 2000;
-                delay = Math.max(1000, delay);
-                delay = Math.min(10000, delay);
-                Timer timer = new Timer();
-                timer.schedule(new TimerTask() {
-                    @Override
-                    public void run() {
-                        Msg m = feature.makePollMsg();
-                        InsteonDevice dev = feature.getDevice();
-                        if (m != null) {
-                            dev.enqueueMessage(m, feature);
-                        }
-                    }
-                }, delay);
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error: ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class IncreaseDecreaseCommandHandler extends CommandHandler {
-        IncreaseDecreaseCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                if (cmd == IncreaseDecreaseType.INCREASE) {
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x15, (byte) 0x00);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to brighten {}", nm(), dev.getAddress());
-                } else if (cmd == IncreaseDecreaseType.DECREASE) {
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x16, (byte) 0x00);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to dimm {}", nm(), dev.getAddress());
-                }
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class PercentHandler extends CommandHandler {
-        PercentHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                PercentType pc = (PercentType) cmd;
-                logger.debug("changing level of {} to {}", dev.getAddress(), pc.intValue());
-                int level = (int) Math.ceil((pc.intValue() * 255.0) / 100); // round up
-                if (level > 0) { // make light on message with given level
-                    level = getMaxLightLevel(conf, level);
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x11, (byte) level);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to set {} to {}", nm(), dev.getAddress(), level);
-                } else { // switch off
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x13, (byte) 0x00);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to set {} to zero by switching off", nm(), dev.getAddress());
-                }
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    private abstract static class RampCommandHandler extends CommandHandler {
-        private static double[] halfRateRampTimes = new double[] { 0.1, 0.3, 2, 6.5, 19, 23.5, 28, 32, 38.5, 47, 90,
-                150, 210, 270, 360, 480 };
-
-        private byte onCmd;
-        private byte offCmd;
+        private static final double[] rampRateTimes = {
+            0.1, 0.2, 0.3, 0.5, 2, 4.5, 6.5, 8.5, 19, 21.5, 23.5, 26, 28, 30, 32, 34,
+            38.5, 43, 47, 60, 90, 120, 150, 180, 210, 240, 270, 300, 360, 420, 480
+        };
 
         RampCommandHandler(DeviceFeature f) {
             super(f);
-            // Can't process parameters here because they are set after constructor is invoked.
-            // Unfortunately, this means we can't declare the onCmd, offCmd to be final.
         }
 
-        @Override
-        void setParameters(Map<String, @Nullable String> params) {
-            super.setParameters(params);
-            onCmd = (byte) getIntParameter("on", 0x2E);
-            offCmd = (byte) getIntParameter("off", 0x2F);
+        protected int getHalfRampRate(double rampTime) {
+            return getRampRate(rampTime, true);
         }
 
-        protected final byte getOnCmd() {
-            return onCmd;
+        protected int getRampRate(double rampTime) {
+            return getRampRate(rampTime, false);
         }
 
-        protected final byte getOffCmd() {
-            return offCmd;
-        }
-
-        protected byte encode(double ramptimeSeconds, int ramplevel) throws FieldException {
-            if (ramplevel < 0 || ramplevel > 100) {
-                throw new FieldException("ramplevel must be in the range 0-100 (inclusive)");
-            }
-
-            if (ramptimeSeconds < 0) {
-                throw new FieldException("ramptime must be greater than 0");
-            }
-
-            int ramptime;
-            int insertionPoint = Arrays.binarySearch(halfRateRampTimes, ramptimeSeconds);
-            if (insertionPoint > 0) {
-                ramptime = 15 - insertionPoint;
-            } else {
-                insertionPoint = -insertionPoint - 1;
+        private int getRampRate(double rampTime, boolean isHalfRate) {
+            double[] rampTimes = getRampRateTimes(isHalfRate);
+            int index = Arrays.binarySearch(rampTimes, rampTime);
+            if (index < 0) {
+                int insertionPoint = -index - 1;
                 if (insertionPoint == 0) {
-                    ramptime = 15;
+                    index = insertionPoint;
+                } else if (insertionPoint == rampTimes.length) {
+                    index = insertionPoint - 1;
                 } else {
-                    double d1 = Math.abs(halfRateRampTimes[insertionPoint - 1] - ramptimeSeconds);
-                    double d2 = Math.abs(halfRateRampTimes[insertionPoint] - ramptimeSeconds);
-                    ramptime = 15 - (d1 > d2 ? insertionPoint : insertionPoint - 1);
-                    logger.debug("ramp encoding: time {} insert {} d1 {} d2 {} ramp {}", ramptimeSeconds,
-                            insertionPoint, d1, d2, ramptime);
+                    double lowDiff = Math.abs(rampTimes[insertionPoint - 1] - rampTime);
+                    double highDiff = Math.abs(rampTimes[insertionPoint] - rampTime);
+                    // update index to closest index based on smallest interval at insertion point
+                    index = lowDiff >= highDiff ? insertionPoint : insertionPoint - 1;
                 }
             }
-
-            int r = (int) Math.round(ramplevel / (100.0 / 15.0));
-            return (byte) (((r & 0x0f) << 4) | (ramptime & 0xf));
+            // return ramp rate based on descending index value,
+            //  compensating for index 0 being relevant in half rate time array only
+            return rampTimes.length - index - (isHalfRate ? 1 : 0);
         }
 
-        protected double getRampTime(InsteonChannelConfiguration conf, double defaultValue) {
-            Map<String, @Nullable String> params = conf.getParameters();
-            return params.containsKey("ramptime") ? Double.parseDouble(params.get("ramptime")) : defaultValue;
+        private double[] getRampRateTimes(boolean isHalfRate) {
+            if (isHalfRate) {
+                int length = (int) Math.ceil(rampRateTimes.length / 2.0); // round up array length
+                double[] halfRampRateTimes = new double[length];
+                for (int i = 0; i < rampRateTimes.length; i+=2) {
+                    halfRampRateTimes[i/2] = rampRateTimes[i];
+                }
+                return halfRampRateTimes;
+            }
+            return rampRateTimes;
         }
     }
 
+    /**
+     * Ramp dimmer command handler
+     */
     @NonNullByDefault
-    public static class RampPercentHandler extends RampCommandHandler {
-
-        RampPercentHandler(DeviceFeature f) {
+    public static class RampDimmerCommandHandler extends RampCommandHandler {
+        RampDimmerCommandHandler(DeviceFeature f) {
             super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof OnOffType || cmd instanceof PercentType;
         }
 
         @Override
         public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
             try {
-                PercentType pc = (PercentType) cmd;
-                double ramptime = getRampTime(conf, 0);
-                int level = pc.intValue();
-                if (level > 0) { // make light on message with given level
-                    level = getMaxLightLevel(conf, level);
-                    byte cmd2 = encode(ramptime, level);
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, getOnCmd(), cmd2);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to set {} to {} with {} second ramp time.", nm(), dev.getAddress(),
-                            level, ramptime);
-                } else { // switch off
-                    Msg m = dev.makeStandardMessage((byte) 0x0f, getOffCmd(), (byte) 0x00);
-                    dev.enqueueMessage(m, feature);
-                    logger.debug("{}: sent msg to set {} to zero by switching off with {} ramp time.", nm(),
-                            dev.getAddress(), ramptime);
+                double rampTime = getRampTime(conf);
+                int level = getLevel(cmd);
+                int cmd1 = getCommandCode(dev, level);
+                int cmd2 = getEncodedValue(rampTime, level);
+                Msg m = dev.makeStandardMessage((byte) 0x0F, (byte) cmd1, (byte) cmd2);
+                dev.enqueueRequest(m, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent level {} with ramp time {}s to {}", nm(), cmd, rampTime, dev.getAddress());
                 }
             } catch (InvalidMessageTypeException e) {
                 logger.warn("{}: invalid message: ", nm(), e);
@@ -679,40 +1144,68 @@ public abstract class CommandHandler {
                 logger.warn("{}: command send message creation error ", nm(), e);
             }
         }
+
+        private int getCommandCode(InsteonDevice dev, int level) {
+            // older device with firmware up to 0x41 uses commands 0x2E/0x2F, while newer uses 0x34/0x35
+            if (dev.getProductData().getFirmwareVersion() <= 0x41) {
+                return level > 0 ? 0x2E : 0x2F;
+            } else {
+                return level > 0 ? 0x34 : 0x35;
+            }
+        }
+
+        private int getEncodedValue(double rampTime, int level) {
+            int highByte = (int) Math.round(level * 0x0F / 100.0) & 0x0F;
+            int lowByte = getHalfRampRate(rampTime) & 0x0F;
+            return highByte << 4 | lowByte;
+        }
+
+        private int getLevel(Command cmd) {
+            if (cmd instanceof OnOffType) {
+                return cmd == OnOffType.ON ? 0xFF : 0x00;
+            } else if (cmd instanceof PercentType) {
+                return ((PercentType) cmd).intValue();
+            } else {
+                logger.warn("{}: got unexpected command type, defaulting to: 0", nm());
+                return 0;
+            }
+        }
+
+        private double getRampTime(InsteonChannelConfiguration conf) {
+            double rampTime = conf.getDoubleParameter("ramptime", -1);
+            if (rampTime >= 0.1 && rampTime <= 480) {
+                return rampTime;
+            } else {
+                logger.warn("{}: ramptime parameter must be between 0.1 and 480 sec on channel {}", nm(),
+                        conf.getChannelName());
+            }
+            return 2; // default medium setting (2 seconds)
+        }
     }
 
+    /**
+     * Ramp rate command handler
+     */
     @NonNullByDefault
-    public static class PowerMeterCommandHandler extends CommandHandler {
-        PowerMeterCommandHandler(DeviceFeature f) {
+    public static class RampRateCommandHandler extends RampCommandHandler {
+        RampRateCommandHandler(DeviceFeature f) {
             super(f);
         }
 
         @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof DecimalType || cmd instanceof QuantityType;
+        }
+
+        @Override
         public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            String cmdParam = conf.getParameters().get(InsteonDeviceHandler.CMD);
-            if (cmdParam == null) {
-                logger.warn("{} ignoring cmd {} because no cmd= is configured!", nm(), cmd);
-                return;
-            }
             try {
-                if (cmd == OnOffType.ON) {
-                    if (cmdParam.equals(InsteonDeviceHandler.CMD_RESET)) {
-                        Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x80, (byte) 0x00);
-                        dev.enqueueMessage(m, feature);
-                        logger.debug("{}: sent reset msg to power meter {}", nm(), dev.getAddress());
-                        feature.publish(OnOffType.OFF, StateChangeType.ALWAYS, InsteonDeviceHandler.CMD,
-                                InsteonDeviceHandler.CMD_RESET);
-                    } else if (cmdParam.equals(InsteonDeviceHandler.CMD_UPDATE)) {
-                        Msg m = dev.makeStandardMessage((byte) 0x0f, (byte) 0x82, (byte) 0x00);
-                        dev.enqueueMessage(m, feature);
-                        logger.debug("{}: sent update msg to power meter {}", nm(), dev.getAddress());
-                        feature.publish(OnOffType.OFF, StateChangeType.ALWAYS, InsteonDeviceHandler.CMD,
-                                InsteonDeviceHandler.CMD_UPDATE);
-                    } else {
-                        logger.warn("{}: ignoring unknown cmd {} for power meter {}", nm(), cmdParam, dev.getAddress());
-                    }
-                } else if (cmd == OnOffType.OFF) {
-                    logger.debug("{}: ignoring off request for power meter {}", nm(), dev.getAddress());
+                int level = getLevel(cmd);
+                byte[] data = { (byte) getIntParameter("group", 1), (byte) 0x05, (byte) level };
+                Msg m = dev.makeExtendedMessage((byte) 0x1F, (byte) 0x2E, (byte) 0x00, data);
+                dev.enqueueRequest(m, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent ramp time {} to {}", nm(), cmd, dev.getAddress());
                 }
             } catch (InvalidMessageTypeException e) {
                 logger.warn("{}: invalid message: ", nm(), e);
@@ -720,151 +1213,507 @@ public abstract class CommandHandler {
                 logger.warn("{}: command send message creation error ", nm(), e);
             }
         }
-    }
 
-    /**
-     * Command handler that sends a command with a numerical value to a device.
-     * The handler is very parameterizable so it can be reused for different devices.
-     * First used for setting thermostat parameters.
-     */
-
-    @NonNullByDefault
-    public static class NumberCommandHandler extends CommandHandler {
-        NumberCommandHandler(DeviceFeature f) {
-            super(f);
+        private int getLevel(Command cmd) {
+            double rampTime = getRampTime(cmd);
+            return getRampRate(rampTime);
         }
 
-        public int transform(int cmd) {
-            return (cmd);
-        }
-
-        @Override
-        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
-            try {
-                int dc = transform(((DecimalType) cmd).intValue());
-                int intFactor = getIntParameter("factor", 1);
-                //
-                // determine what level should be, and what field it should be in
-                //
-                int ilevel = dc * intFactor;
-                byte level = (byte) (ilevel > 255 ? 0xFF : ((ilevel < 0) ? 0 : ilevel));
-                String vfield = getStringParameter("value", "");
-                if (vfield == "") {
-                    logger.warn("{} has no value field specified", nm());
-                }
-                //
-                // figure out what cmd1, cmd2, d1, d2, d3 are supposed to be
-                // to form a proper message
-                //
-                int cmd1 = getIntParameter("cmd1", -1);
-                if (cmd1 < 0) {
-                    logger.warn("{} has no cmd1 specified!", nm());
-                    return;
-                }
-                int cmd2 = getIntParameter("cmd2", 0);
-                int ext = getIntParameter("ext", 0);
-                Msg m = null;
-                if (ext == 1 || ext == 2) {
-                    byte[] data = new byte[] { (byte) getIntParameter("d1", 0), (byte) getIntParameter("d2", 0),
-                            (byte) getIntParameter("d3", 0) };
-                    m = dev.makeExtendedMessage((byte) 0x0f, (byte) cmd1, (byte) cmd2, data);
-                    m.setByte(vfield, level);
-                    if (ext == 1) {
-                        m.setCRC();
-                    } else if (ext == 2) {
-                        m.setCRC2();
-                    }
-                } else {
-                    m = dev.makeStandardMessage((byte) 0x0f, (byte) cmd1, (byte) cmd2);
-                    m.setByte(vfield, level);
-                }
-                dev.enqueueMessage(m, feature);
-                logger.debug("{}: sent msg to change level to {}", nm(), ((DecimalType) cmd).intValue());
-                m = null;
-            } catch (InvalidMessageTypeException e) {
-                logger.warn("{}: invalid message: ", nm(), e);
-            } catch (FieldException e) {
-                logger.warn("{}: command send message creation error ", nm(), e);
+        @SuppressWarnings("unchecked")
+        private double getRampTime(Command cmd) {
+            if (cmd instanceof DecimalType) {
+              return ((DecimalType) cmd).doubleValue();
+            } else if (cmd instanceof QuantityType) {
+              return  ((QuantityType<Time>) cmd).toUnit(SmartHomeUnits.SECOND).doubleValue();
+            } else {
+              logger.warn("{}: got unexpected command type, defaulting to: 2s", nm());
+              return 2; // default medium setting (2 seconds)
             }
         }
     }
 
     /**
-     * Handler to set the thermostat system mode
+     * FanLinc fan command handler
      */
     @NonNullByDefault
-    public static class ThermostatSystemModeCommandHandler extends NumberCommandHandler {
-        ThermostatSystemModeCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public int transform(int cmd) {
-            switch (cmd) {
-                case 0:
-                    return (0x09); // off
-                case 1:
-                    return (0x04); // heat
-                case 2:
-                    return (0x05); // cool
-                case 3:
-                    return (0x06); // auto (aka manual auto)
-                case 4:
-                    return (0x0A); // program (aka auto)
-                default:
-                    break;
-            }
-            return (0x0A); // when in doubt go to program
-        }
-    }
-
-    /**
-     * Handler to set the thermostat fan mode
-     */
-    @NonNullByDefault
-    public static class ThermostatFanModeCommandHandler extends NumberCommandHandler {
-        ThermostatFanModeCommandHandler(DeviceFeature f) {
-            super(f);
-        }
-
-        @Override
-        public int transform(int cmd) {
-            switch (cmd) {
-                case 0:
-                    return (0x08); // fan mode auto
-                case 1:
-                    return (0x07); // fan always on
-                default:
-                    break;
-            }
-            return (0x08); // when in doubt go auto mode
-        }
-    }
-
-    /**
-     * Handler to set the fanlinc fan mode
-     */
-    @NonNullByDefault
-    public static class FanLincFanCommandHandler extends NumberCommandHandler {
+    public static class FanLincFanCommandHandler extends SecondaryOnOffCommandHandler {
         FanLincFanCommandHandler(DeviceFeature f) {
             super(f);
         }
 
         @Override
-        public int transform(int cmd) {
-            switch (cmd) {
-                case 0:
-                    return (0x00); // fan off
-                case 1:
-                    return (0x55); // fan low
-                case 2:
-                    return (0xAA); // fan medium
-                case 3:
-                    return (0xFF); // fan high
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public int getCommandCode(InsteonChannelConfiguration conf, Command cmd) {
+            String mode = ((StringType) cmd).toString();
+            return mode != "OFF" ? 0x11 : 0x13;
+        }
+
+        @Override
+        public int getLevel(InsteonChannelConfiguration conf, Command cmd) {
+            String mode = ((StringType) cmd).toString();
+            switch (mode) {
+                case "OFF":
+                    return 0x00;
+                case "LOW":
+                    return 0x55;
+                case "MEDIUM":
+                    return 0xAA;
+                case "HIGH":
+                    return 0xFF;
                 default:
-                    break;
+                    logger.warn("{}: got unexpected fan mode command: {}, defaulting to: OFF", nm(), mode);
+                    return 0x00;
             }
-            return (0x00); // all other modes are "off"
+        }
+    }
+
+    /**
+     * I/O linc momentary duration command handler
+     */
+    @NonNullByDefault
+    public static class IOLincMomentaryDurationCommandHandler extends CommandHandler {
+        IOLincMomentaryDurationCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof QuantityType;
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            try {
+                int prescaler = 1;
+                int delay = (int) Math.round(getDuration(cmd) * 10);
+                if (delay > 255) {
+                    prescaler = (int) Math.ceil(delay / 255.0);
+                    delay = (int) Math.round(delay / (double) prescaler);
+                }
+                // define ext command message to set momentary duration delay
+                Msg mdelay = dev.makeExtendedMessage((byte) 0x1F, (byte) 0x2E, (byte) 0x00,
+                        new byte[] { (byte) 0x01, (byte) 0x06, (byte) delay });
+                // define ext command message to set momentary duration prescaler
+                Msg mprescaler = dev.makeExtendedMessage((byte) 0x1F, (byte) 0x2E, (byte) 0x00,
+                        new byte[] { (byte) 0x01, (byte) 0x07, (byte) prescaler });
+                // enqueue requests
+                dev.enqueueRequest(mdelay, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent momentary duration delay {} request to {}", nm(),
+                            ByteUtils.getHexString(delay), dev.getAddress());
+                }
+                dev.enqueueRequest(mprescaler, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent momentary duration prescaler {} request to {}", nm(),
+                            ByteUtils.getHexString(prescaler), dev.getAddress());
+                }
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private double getDuration(Command cmd) {
+            QuantityType<Time> time = (QuantityType<Time>) cmd;
+            return time.toUnit(SmartHomeUnits.SECOND).doubleValue();
+        }
+    }
+
+    /**
+     * I/O linc relay mode command handler
+     */
+    @NonNullByDefault
+    public static class IOLincRelayModeCommandHandler extends CommandHandler {
+        IOLincRelayModeCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            try {
+                for (Map.Entry<Integer, String> opFlagCmd : getOpFlagCmds(cmd).entrySet()) {
+                    Msg m = dev.makeExtendedMessage((byte) 0x1F, (byte) 0x20, opFlagCmd.getKey().byteValue());
+                    dev.enqueueRequest(m, feature);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("{}: sent op flag {} request to {}", nm(), opFlagCmd.getValue(), dev.getAddress());
+                    }
+                }
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            }
+        }
+
+        private Map<Integer, String> getOpFlagCmds(Command cmd) {
+            Map<Integer, String> commands = new HashMap<>();
+            String mode = ((StringType) cmd).toString();
+            switch (mode) {
+                case "LATCHING":
+                    commands.put(0x07, "momentary mode OFF");
+                    break;
+                case "MOMENTARY_A":
+                    commands.put(0x06, "momentary mode ON");
+                    commands.put(0x13, "momentary trigger on/off OFF");
+                    commands.put(0x15, "momentary sensor follow OFF");
+                    break;
+                case "MOMENTARY_B":
+                    commands.put(0x06, "momentary mode ON");
+                    commands.put(0x12, "momentary trigger on/off ON");
+                    commands.put(0x15, "momentary sensor follow OFF");
+                    break;
+                case "MOMENTARY_C":
+                    commands.put(0x06, "momentary mode ON");
+                    commands.put(0x13, "momentary trigger on/off OFF");
+                    commands.put(0x14, "momentary sensor follow ON");
+                    break;
+                default:
+                    logger.warn("{}: got unexpected relay mode command: {}", nm(), mode);
+            }
+            return commands;
+        }
+    }
+
+    /**
+     * Thermostat fan mode command handler
+     */
+    @NonNullByDefault
+    public static class ThermostatFanModeCommandHandler extends CustomCommandHandler {
+        ThermostatFanModeCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            String mode = ((StringType) cmd).toString();
+            switch (mode) {
+                case "AUTO":
+                    return 0x08;
+                case "ON":
+                    return 0x07;
+                default:
+                    logger.warn("{}: got unexpected fan mode command: {}, defaulting to: AUTO", nm(), mode);
+                    return 0x08;
+            }
+        }
+    }
+
+    /**
+     * Thermostat system mode command handler
+     */
+    @NonNullByDefault
+    public static class ThermostatSystemModeCommandHandler extends CustomCommandHandler {
+        ThermostatSystemModeCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            String mode = ((StringType) cmd).toString();
+            switch (mode) {
+                case "OFF":
+                    return 0x09;
+                case "HEAT":
+                    return 0x04;
+                case "COOL":
+                    return 0x05;
+                case "AUTO":
+                    return 0x06;
+                case "PROGRAM":
+                    return 0x0A;
+                default:
+                    logger.warn("{}: got unexpected system mode command: {}, defaulting to: PROGRAM", nm(), mode);
+                    return 0x0A;
+            }
+        }
+    }
+
+    /**
+     * Venstar thermostat system mode handler
+     */
+    @NonNullByDefault
+    public static class VenstarSystemModeCommandHandler extends CustomCommandHandler {
+        VenstarSystemModeCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            String mode = ((StringType) cmd).toString();
+            switch (mode) {
+                case "OFF":
+                    return 0x09;
+                case "HEAT":
+                    return 0x04;
+                case "COOL":
+                    return 0x05;
+                case "AUTO":
+                    return 0x06;
+                case "PROGRAM_HEAT":
+                    return 0x0A;
+                case "PROGRAM_COOL":
+                    return 0x0B;
+                case "PROGRAM_AUTO":
+                    return 0x0C;
+                default:
+                    logger.warn("{}: got unexpected system mode command: {}, defaulting to: PROGRAM_AUTO", nm(), mode);
+                    return 0x0C;
+            }
+        }
+    }
+
+    /**
+     * Thermostat temperature format command handler
+     */
+    @NonNullByDefault
+    public static class ThermostatTemperatureFormatCommandHandler extends CustomBitmaskCommandHandler {
+        ThermostatTemperatureFormatCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public boolean shouldSetBit(Command cmd) {
+            String format = ((StringType) cmd).toString();
+            switch (format) {
+                case "FAHRENHEIT":
+                    return false; // 0x00 (clear)
+                case "CELSIUS":
+                    return true;  // 0x01 (set)
+                default:
+                    logger.warn("{}: got unexpected temperature format command: {}, defaulting to: FAHRENHEIT", nm(),
+                            format);
+                    return false;
+            }
+        }
+    }
+
+    /**
+     * Venstar thermostat temperature format command handler
+     */
+    @NonNullByDefault
+    public static class VenstarTemperatureFormatCommandHandler extends CustomCommandHandler {
+        VenstarTemperatureFormatCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public double getValue(Command cmd) {
+            String format = ((StringType) cmd).toString();
+            switch (format) {
+                case "FAHRENHEIT":
+                    return 0x00;
+                case "CELSIUS":
+                    return 0x01;
+                default:
+                    logger.warn("{}: got unexpected temperature format command: {}, defaulting to: FAHRENHEIT", nm(),
+                            format);
+                    return 0x00;
+            }
+        }
+    }
+
+    /**
+     * Thermostat time format command handler
+     */
+    @NonNullByDefault
+    public static class ThermostatTimeFormatCommandHandler extends CustomBitmaskCommandHandler {
+        ThermostatTimeFormatCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof StringType;
+        }
+
+        @Override
+        public boolean shouldSetBit(Command cmd) {
+            String format = ((StringType) cmd).toString();
+            switch (format) {
+                case "12H":
+                    return false; // 0x00 (clear)
+                case "24H":
+                    return true;  // 0x01 (set)
+                default:
+                    logger.warn("{}: got unexpected temperature format command: {}, defaulting to: 12H", nm(),
+                            format);
+                    return false;
+            }
+        }
+    }
+
+    /**
+     * Thermostat sync time command handler
+     */
+    @NonNullByDefault
+    public static class ThermostatSyncTimeCommandHandler extends MomentaryOnCommandHandler {
+        ThermostatSyncTimeCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            try {
+                ZonedDateTime time = ZonedDateTime.now();
+                byte[] data = { (byte) 0x02, (byte) (time.getDayOfWeek().getValue() % 7), (byte) time.getHour(),
+                          (byte) time.getMinute(), (byte) time.getSecond() };
+                Msg m = dev.makeExtendedMessageCRC2((byte) 0x1F, (byte) 0x2E, (byte) 0x02, data);
+                dev.enqueueRequest(m, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent set time data request to {}", nm(), dev.getAddress());
+                }
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            }
+        }
+    }
+
+    /**
+     * X10 generic abstract command handler
+     */
+    @NonNullByDefault
+    public abstract static class X10CommandHandler extends CommandHandler {
+        X10CommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleCommand(InsteonChannelConfiguration conf, Command cmd, InsteonDevice dev) {
+            try {
+                int unitCode = getUnitCode(dev);
+                int cmdCode = getCommandCode(cmd, dev);
+                Msg munit = dev.makeX10Message((byte) unitCode, (byte) 0x00); // send unit code
+                dev.enqueueRequest(munit, feature);
+                Msg mcmd = dev.makeX10Message((byte) cmdCode, (byte) 0x80); // send command code
+                dev.enqueueRequest(mcmd, feature);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("{}: sent {} request to {}", nm(), cmd, dev.getAddress());
+                }
+            } catch (InvalidMessageTypeException e) {
+                logger.warn("{}: invalid message: ", nm(), e);
+            } catch (FieldException e) {
+                logger.warn("{}: command send message creation error ", nm(), e);
+            }
+        }
+
+        private int getUnitCode(InsteonDevice dev) {
+            int houseCode = dev.getX10HouseCode();
+            int unitCode = dev.getX10UnitCode();
+            return houseCode << 4 | unitCode;
+        }
+
+        public abstract int getCommandCode(Command cmd, InsteonDevice dev);
+    }
+
+    /**
+     * X10 on/off command handler
+     */
+    @NonNullByDefault
+    public static class X10OnOffCommandHandler extends X10CommandHandler {
+        X10OnOffCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof OnOffType;
+        }
+
+        @Override
+        public int getCommandCode(Command cmd, InsteonDevice dev) {
+            int houseCode = dev.getX10HouseCode();
+            int cmdCode = cmd == OnOffType.ON ? X10.Command.ON.code() : X10.Command.OFF.code();
+            return houseCode << 4 | cmdCode;
+        }
+    }
+
+    /**
+     * X10 percent command handler
+     */
+    @NonNullByDefault
+    public static class X10PercentCommandHandler extends X10CommandHandler {
+
+        private static final int[] x10LevelCodes = { 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 };
+
+        X10PercentCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof PercentType;
+        }
+
+        @Override
+        public int getCommandCode(Command cmd, InsteonDevice dev) {
+            //
+            // I did not have hardware that would respond to the PRESET_DIM codes.
+            // This code path needs testing.
+            //
+            int level = ((PercentType) cmd).intValue() * 32 / 100;
+            int levelCode = x10LevelCodes[level % 16];
+            int cmdCode = level >= 16 ? X10.Command.PRESET_DIM_2.code() : X10.Command.PRESET_DIM_1.code();
+            return levelCode << 4 | cmdCode;
+        }
+    }
+
+    /**
+     * X10 increase/decrease command handler
+     */
+    @NonNullByDefault
+    public static class X10IncreaseDecreaseCommandHandler extends X10CommandHandler {
+        X10IncreaseDecreaseCommandHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean canHandle(Command cmd) {
+            return cmd instanceof IncreaseDecreaseType;
+        }
+
+        @Override
+        public int getCommandCode(Command cmd, InsteonDevice dev) {
+            int houseCode = dev.getX10HouseCode();
+            int cmdCode = cmd == IncreaseDecreaseType.INCREASE ? X10.Command.BRIGHT.code() : X10.Command.DIM.code();
+            return houseCode << 4 | cmdCode;
         }
     }
 
@@ -876,16 +1725,15 @@ public abstract class CommandHandler {
      * @param f the feature for which to create the handler
      * @return the handler which was created
      */
-    @Nullable
-    public static <T extends CommandHandler> T makeHandler(String name, Map<String, @Nullable String> params,
-            DeviceFeature f) {
+    public static @Nullable <T extends CommandHandler> T makeHandler(String name,
+            Map<String, @Nullable String> params, DeviceFeature f) {
         String cname = CommandHandler.class.getName() + "$" + name;
         try {
             Class<?> c = Class.forName(cname);
             @SuppressWarnings("unchecked")
             Class<? extends T> dc = (Class<? extends T>) c;
             T ch = dc.getDeclaredConstructor(DeviceFeature.class).newInstance(f);
-            ch.setParameters(params);
+            ch.addParameters(params);
             return ch;
         } catch (ClassNotFoundException | InstantiationException | IllegalAccessException | IllegalArgumentException
                 | InvocationTargetException | NoSuchMethodException | SecurityException e) {

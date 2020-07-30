@@ -12,11 +12,22 @@
  */
 package org.openhab.binding.insteon.internal.device;
 
+import static org.openhab.binding.insteon.internal.InsteonBindingConstants.*;
+
 import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.HashMap;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.ZoneId;
 import java.util.Map;
+
+import javax.measure.Unit;
+import javax.measure.quantity.Dimensionless;
+import javax.measure.quantity.Energy;
+import javax.measure.quantity.Power;
+import javax.measure.quantity.Temperature;
+import javax.measure.quantity.Time;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -26,18 +37,18 @@ import org.eclipse.smarthome.core.library.types.OnOffType;
 import org.eclipse.smarthome.core.library.types.OpenClosedType;
 import org.eclipse.smarthome.core.library.types.PercentType;
 import org.eclipse.smarthome.core.library.types.QuantityType;
+import org.eclipse.smarthome.core.library.types.StringType;
 import org.eclipse.smarthome.core.library.unit.ImperialUnits;
-import org.eclipse.smarthome.core.library.unit.SIUnits;
 import org.eclipse.smarthome.core.library.unit.SmartHomeUnits;
+import org.eclipse.smarthome.core.library.unit.SIUnits;
 import org.eclipse.smarthome.core.types.State;
+import org.eclipse.smarthome.core.types.UnDefType;
 import org.openhab.binding.insteon.internal.device.DeviceFeatureListener.StateChangeType;
 import org.openhab.binding.insteon.internal.device.GroupMessageStateMachine.GroupMessage;
-import org.openhab.binding.insteon.internal.handler.InsteonDeviceHandler;
 import org.openhab.binding.insteon.internal.message.FieldException;
-import org.openhab.binding.insteon.internal.message.InvalidMessageTypeException;
 import org.openhab.binding.insteon.internal.message.Msg;
-import org.openhab.binding.insteon.internal.message.MsgType;
-import org.openhab.binding.insteon.internal.utils.Utils;
+import org.openhab.binding.insteon.internal.utils.BitwiseUtils;
+import org.openhab.binding.insteon.internal.utils.ByteUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,22 +59,20 @@ import org.slf4j.LoggerFactory;
  * @author Daniel Pfrommer - Initial contribution
  * @author Bernd Pfrommer - openHAB 1 insteonplm binding
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @SuppressWarnings("null")
-public abstract class MessageHandler {
+public abstract class MessageHandler extends FeatureBaseHandler {
     private static final Logger logger = LoggerFactory.getLogger(MessageHandler.class);
-
-    protected DeviceFeature feature;
-    protected Map<String, @Nullable String> parameters = new HashMap<>();
 
     /**
      * Constructor
      *
-     * @param p state publishing object for dissemination of state changes
+     * @param f The device feature for the incoming message
      */
-    MessageHandler(DeviceFeature p) {
-        feature = p;
+    MessageHandler(DeviceFeature f) {
+        super(f);
     }
 
     /**
@@ -74,39 +83,18 @@ public abstract class MessageHandler {
      * @param group all-link group or -1 if not specified
      * @param cmd1 the insteon cmd1 field
      * @param msg the received insteon message
-     * @param feature the DeviceFeature to which this message handler is attached
      */
-    public abstract void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature feature);
-
-    /**
-     * Method to send an extended insteon message for querying a device
-     *
-     * @param f DeviceFeature that is being currently handled
-     * @param aCmd1 cmd1 for message to be sent
-     * @param aCmd2 cmd2 for message to be sent
-     */
-    public void sendExtendedQuery(DeviceFeature f, byte aCmd1, byte aCmd2) {
-        InsteonDevice d = f.getDevice();
-        try {
-            Msg m = d.makeExtendedMessage((byte) 0x1f, aCmd1, aCmd2);
-            m.setQuietTime(500L);
-            d.enqueueMessage(m, f);
-        } catch (InvalidMessageTypeException e) {
-            logger.warn("msg exception sending query message to device {}", d.getAddress());
-        } catch (FieldException e) {
-            logger.warn("field exception sending query message to device {}", d.getAddress());
-        }
-    }
+    public abstract void handleMessage(int group, byte cmd1, Msg msg);
 
     /**
      * Check if group matches
      *
      * @param group group to test for
-     * @return true if group matches or no group is specified
+     * @return true if group matches or no group is specified/provided
      */
     public boolean matchesGroup(int group) {
-        int g = getIntParameter("group", -1);
-        return (g == -1 || g == group);
+        int g = getGroup();
+        return (g == -1 || group == -1 || g == group);
     }
 
     /**
@@ -119,85 +107,15 @@ public abstract class MessageHandler {
     }
 
     /**
-     * Helper function to get an integer parameter for the handler
-     *
-     * @param key name of the int parameter (as specified in device features!)
-     * @param def default to return if parameter not found
-     * @return value of int parameter (or default if not found)
-     */
-    protected int getIntParameter(String key, int def) {
-        String val = parameters.get(key);
-        if (val == null) {
-            return (def); // param not found
-        }
-        int ret = def;
-        try {
-            ret = Utils.strToInt(val);
-        } catch (NumberFormatException e) {
-            logger.warn("malformed int parameter in message handler: {}", key);
-        }
-        return ret;
-    }
-
-    /**
-     * Helper function to get a String parameter for the handler
-     *
-     * @param key name of the String parameter (as specified in device features!)
-     * @param def default to return if parameter not found
-     * @return value of parameter (or default if not found)
-     */
-    protected @Nullable String getStringParameter(String key, @Nullable String def) {
-        return (parameters.get(key) == null ? def : parameters.get(key));
-    }
-
-    /**
-     * Helper function to get a double parameter for the handler
-     *
-     * @param key name of the parameter (as specified in device features!)
-     * @param def default to return if parameter not found
-     * @return value of parameter (or default if not found)
-     */
-    protected double getDoubleParameter(String key, double def) {
-        try {
-            if (parameters.get(key) != null) {
-                return Double.parseDouble(parameters.get(key));
-            }
-        } catch (NumberFormatException e) {
-            logger.warn("malformed int parameter in message handler: {}", key);
-        }
-        return def;
-    }
-
-    /**
-     * Test if message refers to the button configured for given feature
-     *
-     * @param msg received message
-     * @param f device feature to test
-     * @return true if we have no button configured or the message is for this button
-     */
-    protected boolean isMybutton(Msg msg, DeviceFeature f) {
-        int myButton = getIntParameter("button", -1);
-        // if there is no button configured for this handler
-        // the message is assumed to refer to this feature
-        // no matter what button is addressed in the message
-        if (myButton == -1) {
-            return true;
-        }
-
-        int button = getButtonInfo(msg, f);
-        return button != -1 && myButton == button;
-    }
-
-    /**
      * Test if parameter matches value
      *
-     * @param param name of parameter to match
      * @param msg message to search
      * @param field field name to match
+     * @param param name of parameter to match
      * @return true if parameter matches
      * @throws FieldException if field not there
      */
-    protected boolean testMatch(String param, Msg msg, String field) throws FieldException {
+    private boolean testMatch(Msg msg, String field, String param) throws FieldException {
         int mp = getIntParameter(param, -1);
         // parameter not filtered for, declare this a match!
         if (mp == -1) {
@@ -217,23 +135,23 @@ public abstract class MessageHandler {
         try {
             int ext = getIntParameter("ext", -1);
             if (ext != -1) {
-                if ((msg.isExtended() && ext != 1) || (!msg.isExtended() && ext != 0)) {
+                if ((!msg.isExtended() && ext != 0) || (msg.isExtended() && ext != 1 && ext != 2)) {
                     return (false);
                 }
-                if (!testMatch("match_cmd1", msg, "command1")) {
+                if (!testMatch(msg, "command1", "cmd1")) {
                     return (false);
                 }
             }
-            if (!testMatch("match_cmd2", msg, "command2")) {
+            if (!testMatch(msg, "command2", "cmd2")) {
                 return (false);
             }
-            if (!testMatch("match_d1", msg, "userData1")) {
+            if (!testMatch(msg, "userData1", "d1")) {
                 return (false);
             }
-            if (!testMatch("match_d2", msg, "userData2")) {
+            if (!testMatch(msg, "userData2", "d2")) {
                 return (false);
             }
-            if (!testMatch("match_d3", msg, "userData3")) {
+            if (!testMatch(msg, "userData3", "d3")) {
                 return (false);
             }
         } catch (FieldException e) {
@@ -244,7 +162,7 @@ public abstract class MessageHandler {
     }
 
     /**
-     * Determines is an incoming ALL LINK message is a duplicate
+     * Determines if an incoming ALL LINK message is a duplicate
      *
      * @param msg the received ALL LINK message
      * @return true if this message is a duplicate
@@ -252,20 +170,20 @@ public abstract class MessageHandler {
     protected boolean isDuplicate(Msg msg) {
         boolean isDuplicate = false;
         try {
-            MsgType t = MsgType.fromValue(msg.getByte("messageFlags"));
-            if (t == MsgType.ALL_LINK_BROADCAST) {
-                int group = msg.getAddress("toAddress").getLowByte() & 0xff;
+            if (msg.isAllLinkBroadcast()) {
+                int group = msg.getGroup();
                 byte cmd1 = msg.getByte("command1");
                 // if the command is 0x06, then it's success message
                 // from the original broadcaster, with which the device
                 // confirms that it got all cleanup replies successfully.
                 GroupMessage gm = (cmd1 == 0x06) ? GroupMessage.SUCCESS : GroupMessage.BCAST;
                 isDuplicate = !feature.getDevice().getGroupState(group, gm, cmd1);
-            } else if (t == MsgType.ALL_LINK_CLEANUP) {
-                // the cleanup messages are direct messages, so the
-                // group # is not in the toAddress, but in cmd2
-                int group = msg.getByte("command2") & 0xff;
-                isDuplicate = !feature.getDevice().getGroupState(group, GroupMessage.CLEAN, (byte) 0);
+            } else if (msg.isCleanup()) {
+                int group = msg.getGroup();
+                isDuplicate = !feature.getDevice().getGroupState(group, GroupMessage.CLEAN, (byte) 0x00);
+            } else if (msg.isBroadcast()) {
+                byte cmd1 = msg.getByte("command1");
+                isDuplicate = !feature.getDevice().getBroadcastState(cmd1);
             }
         } catch (IllegalArgumentException e) {
             logger.warn("cannot parse msg: {}", msg, e);
@@ -276,960 +194,1612 @@ public abstract class MessageHandler {
     }
 
     /**
-     * Extract button information from message
+     * Determines if an incoming DIRECT message is valid
      *
-     * @param msg the message to extract from
-     * @param the device feature (needed for debug printing)
-     * @return the button number or -1 if no button found
+     * @param msg the received DIRECT message
+     * @return true if this message is valid
      */
-    protected static int getButtonInfo(Msg msg, DeviceFeature f) {
-        // the cleanup messages have the button number in the command2 field
-        // the broadcast messages have it as the lsb of the toAddress
-        try {
-            int bclean = msg.getByte("command2") & 0xff;
-            int bbcast = msg.getAddress("toAddress").getLowByte() & 0xff;
-            int button = msg.isCleanup() ? bclean : bbcast;
-            logger.trace("{} button: {} bclean: {} bbcast: {}", f.getDevice().getAddress(), button, bclean, bbcast);
-            return button;
-        } catch (FieldException e) {
-            logger.warn("field exception while parsing msg {}: ", msg, e);
+    protected boolean isValid(Msg msg) {
+        int ext = getIntParameter("ext", -1);
+        // extended message crc is only included in incoming message when using the newer 2-byte method
+        if (ext == 2) {
+            return msg.hasValidCRC2();
         }
-        return -1;
+        return (true);
     }
+
+    //
+    //
+    // ---------------- the various message handlers start here -------------------
+    //
+    //
 
     /**
-     * Shorthand to return class name for logging purposes
-     *
-     * @return name of the class
+     * Default message handler
      */
-    protected String nm() {
-        return (this.getClass().getSimpleName());
-    }
-
-    /**
-     * Set parameter map
-     *
-     * @param map the parameter map for this message handler
-     */
-    public void setParameters(Map<String, @Nullable String> map) {
-        parameters = map;
-    }
-
-    //
-    //
-    // ---------------- the various command handler start here -------------------
-    //
-    //
-
     @NonNullByDefault
     public static class DefaultMsgHandler extends MessageHandler {
-        DefaultMsgHandler(DeviceFeature p) {
-            super(p);
+        DefaultMsgHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            logger.debug("{} ignoring unimpl message with cmd1:{}", nm(), Utils.getHexByte(cmd1));
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: ignoring unimpl message with cmd1 {}", nm(), ByteUtils.getHexString(cmd1));
+            }
         }
     }
 
+    /**
+     * No-op message handler
+     */
     @NonNullByDefault
     public static class NoOpMsgHandler extends MessageHandler {
-        NoOpMsgHandler(DeviceFeature p) {
-            super(p);
+        NoOpMsgHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            logger.trace("{} ignore msg {}: {}", nm(), Utils.getHexByte(cmd1), msg);
-        }
-    }
-
-    @NonNullByDefault
-    public static class LightOnDimmerHandler extends MessageHandler {
-        LightOnDimmerHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            if (!isMybutton(msg, f)) {
-                return;
-            }
-            InsteonAddress a = f.getDevice().getAddress();
-            if (msg.isAckOfDirect()) {
-                logger.warn("{}: device {}: ignoring ack of direct.", nm(), a);
-            } else {
-                String mode = getStringParameter("mode", "REGULAR");
-                logger.debug("{}: device {} was turned on {}. " + "Sending poll request to get actual level", nm(), a,
-                        mode);
-                feature.publish(PercentType.HUNDRED, StateChangeType.ALWAYS);
-                // need to poll to find out what level the dimmer is at now.
-                // it may not be at 100% because dimmers can be configured
-                // to switch to e.g. 75% when turned on.
-                Msg m = f.makePollMsg();
-                if (m != null) {
-                    f.getDevice().enqueueDelayedMessage(m, f, 1000);
-                }
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class LightOffDimmerHandler extends MessageHandler {
-        LightOffDimmerHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            if (isMybutton(msg, f)) {
-                String mode = getStringParameter("mode", "REGULAR");
-                logger.debug("{}: device {} was turned off {}.", nm(), f.getDevice().getAddress(), mode);
-                f.publish(PercentType.ZERO, StateChangeType.ALWAYS);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class LightOnSwitchHandler extends MessageHandler {
-        LightOnSwitchHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            if (isMybutton(msg, f)) {
-                String mode = getStringParameter("mode", "REGULAR");
-                logger.debug("{}: device {} was switched on {}.", nm(), f.getDevice().getAddress(), mode);
-                f.publish(OnOffType.ON, StateChangeType.ALWAYS);
-            } else {
-                logger.debug("ignored message: {}", isMybutton(msg, f));
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class LightOffSwitchHandler extends MessageHandler {
-        LightOffSwitchHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            if (isMybutton(msg, f)) {
-                String mode = getStringParameter("mode", "REGULAR");
-                logger.debug("{}: device {} was switched off {}.", nm(), f.getDevice().getAddress(), mode);
-                f.publish(OnOffType.OFF, StateChangeType.ALWAYS);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("{}: ignoring message with cmd1 {}", nm(), ByteUtils.getHexString(cmd1));
             }
         }
     }
 
     /**
-     * This message handler processes replies to Ramp ON/OFF commands.
-     * Currently, it's been tested for the 2672-222 LED Bulb. Other
-     * devices may use a different pair of commands (0x2E, 0x2F). This
-     * handler and the command handler will need to be extended to support
-     * those devices.
-     */
-    @NonNullByDefault
-    public static class RampDimmerHandler extends MessageHandler {
-        private int onCmd;
-        private int offCmd;
-
-        RampDimmerHandler(DeviceFeature p) {
-            super(p);
-            // Can't process parameters here because they are set after constructor is invoked.
-            // Unfortunately, this means we can't declare the onCmd, offCmd to be final.
-        }
-
-        @Override
-        public void setParameters(Map<String, @Nullable String> params) {
-            super.setParameters(params);
-            onCmd = getIntParameter("on", 0x2E);
-            offCmd = getIntParameter("off", 0x2F);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            if (cmd1 == onCmd) {
-                int level = getLevel(msg);
-                logger.debug("{}: device {} was switched on using ramp to level {}.", nm(), f.getDevice().getAddress(),
-                        level);
-                if (level == 100) {
-                    f.publish(OnOffType.ON, StateChangeType.ALWAYS);
-                } else {
-                    // The publisher will convert an ON at level==0 to an OFF.
-                    // However, this is not completely accurate since a ramp
-                    // off at level == 0 may not turn off the dimmer completely
-                    // (if I understand the Insteon docs correctly). In any
-                    // case,
-                    // it would be an odd scenario to turn ON a light at level
-                    // == 0
-                    // rather than turn if OFF.
-                    f.publish(new PercentType(level), StateChangeType.ALWAYS);
-                }
-            } else if (cmd1 == offCmd) {
-                logger.debug("{}: device {} was switched off using ramp.", nm(), f.getDevice().getAddress());
-                f.publish(new PercentType(0), StateChangeType.ALWAYS);
-            }
-        }
-
-        private int getLevel(Msg msg) {
-            try {
-                byte cmd2 = msg.getByte("command2");
-                return (int) Math.round(((cmd2 >> 4) & 0x0f) * (100 / 15d));
-            } catch (FieldException e) {
-                logger.warn("Can't access command2 byte", e);
-                return 0;
-            }
-        }
-    }
-
-    /**
-     * A message handler that processes replies to queries.
-     * If command2 == 0xFF then the light has been turned on
-     * else if command2 == 0x00 then the light has been turned off
-     */
-
-    @NonNullByDefault
-    public static class SwitchRequestReplyHandler extends MessageHandler {
-        SwitchRequestReplyHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            try {
-                InsteonAddress a = f.getDevice().getAddress();
-                int cmd2 = msg.getByte("command2") & 0xff;
-                int button = this.getIntParameter("button", -1);
-                if (button < 0) {
-                    handleNoButtons(cmd2, a, msg);
-                } else {
-                    boolean isOn = isLEDLit(cmd2, button);
-                    logger.debug("{}: dev {} button {} switched to {}", nm(), a, button, isOn ? "ON" : "OFF");
-                    feature.publish(isOn ? OnOffType.ON : OnOffType.OFF, StateChangeType.CHANGED);
-                }
-            } catch (FieldException e) {
-                logger.warn("{} error parsing {}: ", nm(), msg, e);
-            }
-        }
-
-        /**
-         * Handle the case where no buttons have been configured.
-         * In this situation, the only return values should be 0 (light off)
-         * or 0xff (light on)
-         *
-         * @param cmd2
-         */
-        void handleNoButtons(int cmd2, InsteonAddress a, Msg msg) {
-            if (cmd2 == 0) {
-                logger.debug("{}: set device {} to OFF", nm(), a);
-                feature.publish(OnOffType.OFF, StateChangeType.CHANGED);
-            } else if (cmd2 == 0xff) {
-                logger.debug("{}: set device {} to ON", nm(), a);
-                feature.publish(OnOffType.ON, StateChangeType.CHANGED);
-            } else {
-                logger.warn("{}: {} ignoring unexpected cmd2 in msg: {}", nm(), a, msg);
-            }
-        }
-
-        /**
-         * Test if cmd byte indicates that button is lit.
-         * The cmd byte has the LED status bitwise from the left:
-         * 87654321
-         * Note that the 2487S has buttons assigned like this:
-         * 22|6543|11
-         * They used the basis of the 8-button remote, and assigned
-         * the ON button to 1+2, the OFF button to 7+8
-         *
-         * @param cmd cmd byte as received in message
-         * @param button button to test (number in range 1..8)
-         * @return true if button is lit, false otherwise
-         */
-        private boolean isLEDLit(int cmd, int button) {
-            boolean isSet = (cmd & (0x1 << (button - 1))) != 0;
-            logger.trace("cmd: {} button {}", Integer.toBinaryString(cmd), button);
-            logger.trace("msk: {} isSet: {}", Integer.toBinaryString(0x1 << (button - 1)), isSet);
-            return (isSet);
-        }
-    }
-
-    /**
-     * Handles Dimmer replies to status requests.
-     * In the dimmers case the command2 byte represents the light level from 0-255
-     */
-    @NonNullByDefault
-    public static class DimmerRequestReplyHandler extends MessageHandler {
-        DimmerRequestReplyHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonDevice dev = f.getDevice();
-            try {
-                int cmd2 = msg.getByte("command2") & 0xff;
-                if (cmd2 == 0xfe) {
-                    // sometimes dimmer devices are returning 0xfe when on instead of 0xff
-                    cmd2 = 0xff;
-                }
-
-                if (cmd2 == 0) {
-                    logger.debug("{}: set device {} to level 0", nm(), dev.getAddress());
-                    feature.publish(PercentType.ZERO, StateChangeType.CHANGED);
-                } else if (cmd2 == 0xff) {
-                    logger.debug("{}: set device {} to level 100", nm(), dev.getAddress());
-                    feature.publish(PercentType.HUNDRED, StateChangeType.CHANGED);
-                } else {
-                    int level = cmd2 * 100 / 255;
-                    if (level == 0) {
-                        level = 1;
-                    }
-                    logger.debug("{}: set device {} to level {}", nm(), dev.getAddress(), level);
-                    feature.publish(new PercentType(level), StateChangeType.CHANGED);
-                }
-            } catch (FieldException e) {
-                logger.warn("{}: error parsing {}: ", nm(), msg, e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class DimmerStopManualChangeHandler extends MessageHandler {
-        DimmerStopManualChangeHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public boolean isDuplicate(Msg msg) {
-            // Disable duplicate elimination because
-            // there are no cleanup or success messages for start/stop.
-            return (false);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            Msg m = f.makePollMsg();
-            if (m != null) {
-                f.getDevice().enqueueMessage(m, f);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class StartManualChangeHandler extends MessageHandler {
-        StartManualChangeHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public boolean isDuplicate(Msg msg) {
-            // Disable duplicate elimination because
-            // there are no cleanup or success messages for start/stop.
-            return (false);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            try {
-                int cmd2 = msg.getByte("command2") & 0xff;
-                int upDown = (cmd2 == 0) ? 0 : 2;
-                logger.debug("{}: dev {} manual state change: {}", nm(), f.getDevice().getAddress(),
-                        (upDown == 0) ? "DOWN" : "UP");
-                feature.publish(new DecimalType(upDown), StateChangeType.ALWAYS);
-            } catch (FieldException e) {
-                logger.warn("{} error parsing {}: ", nm(), msg, e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class StopManualChangeHandler extends MessageHandler {
-        StopManualChangeHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public boolean isDuplicate(Msg msg) {
-            // Disable duplicate elimination because
-            // there are no cleanup or success messages for start/stop.
-            return (false);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            logger.debug("{}: dev {} manual state change: {}", nm(), f.getDevice().getAddress(), 0);
-            feature.publish(new DecimalType(1), StateChangeType.ALWAYS);
-        }
-    }
-
-    @NonNullByDefault
-    public static class InfoRequestReplyHandler extends MessageHandler {
-        InfoRequestReplyHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonDevice dev = f.getDevice();
-            if (!msg.isExtended()) {
-                logger.warn("{} device {} expected extended msg as info reply, got {}", nm(), dev.getAddress(), msg);
-                return;
-            }
-            try {
-                int cmd2 = msg.getByte("command2") & 0xff;
-                switch (cmd2) {
-                    case 0x00: // this is a product data response message
-                        int prodKey = msg.getInt24("userData2", "userData3", "userData4");
-                        int devCat = msg.getByte("userData5");
-                        int subCat = msg.getByte("userData6");
-                        logger.debug("{} {} got product data: cat: {} subcat: {} key: {} ", nm(), dev.getAddress(),
-                                devCat, subCat, Utils.getHexString(prodKey));
-                        break;
-                    case 0x02: // this is a device text string response message
-                        logger.debug("{} {} got text str {} ", nm(), dev.getAddress(), msg);
-                        break;
-                    default:
-                        logger.warn("{} unknown cmd2 = {} in info reply message {}", nm(), cmd2, msg);
-                        break;
-                }
-            } catch (FieldException e) {
-                logger.warn("error parsing {}: ", msg, e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class MotionSensorDataReplyHandler extends MessageHandler {
-        MotionSensorDataReplyHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonDevice dev = f.getDevice();
-            if (!msg.isExtended()) {
-                logger.trace("{} device {} ignoring non-extended msg {}", nm(), dev.getAddress(), msg);
-                return;
-            }
-            try {
-                int cmd2 = msg.getByte("command2") & 0xff;
-                int batteryLevel;
-                int lightLevel;
-                int temperatureLevel;
-                switch (cmd2) {
-                    case 0x00: // this is a product data response message
-                        batteryLevel = msg.getByte("userData12") & 0xff;
-                        lightLevel = msg.getByte("userData11") & 0xff;
-                        logger.debug("{}: {} got light level: {}, battery level: {}", nm(), dev.getAddress(),
-                                lightLevel, batteryLevel);
-                        feature.publish(new DecimalType(lightLevel), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_LIGHT_LEVEL);
-                        feature.publish(new DecimalType(batteryLevel), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_BATTERY_LEVEL);
-                        break;
-                    case 0x03: // this is the 2844-222 data response message
-                        batteryLevel = msg.getByte("userData6") & 0xff;
-                        lightLevel = msg.getByte("userData7") & 0xff;
-                        temperatureLevel = msg.getByte("userData8") & 0xff;
-                        logger.debug("{}: {} got light level: {}, battery level: {}, temperature level: {}", nm(),
-                                dev.getAddress(), lightLevel, batteryLevel, temperatureLevel);
-                        feature.publish(new DecimalType(lightLevel), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_LIGHT_LEVEL);
-                        feature.publish(new DecimalType(batteryLevel), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_BATTERY_LEVEL);
-                        feature.publish(new DecimalType(temperatureLevel), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_TEMPERATURE_LEVEL);
-
-                        // per 2844-222 dev doc: working battery level range is 0xd2 - 0x70
-                        int batteryPercentage;
-                        if (batteryLevel >= 0xd2) {
-                            batteryPercentage = 100;
-                        } else if (batteryLevel <= 0x70) {
-                            batteryPercentage = 0;
-                        } else {
-                            batteryPercentage = (batteryLevel - 0x70) * 100 / (0xd2 - 0x70);
-                        }
-                        logger.debug("{}: {} battery percentage: {}", nm(), dev.getAddress(), batteryPercentage);
-                        feature.publish(new QuantityType<>(batteryPercentage, SmartHomeUnits.PERCENT),
-                                StateChangeType.CHANGED, InsteonDeviceHandler.FIELD,
-                                InsteonDeviceHandler.FIELD_BATTERY_PERCENTAGE);
-                        break;
-                    default:
-                        logger.warn("unknown cmd2 = {} in info reply message {}", cmd2, msg);
-                        break;
-                }
-            } catch (FieldException e) {
-                logger.warn("error parsing {}: ", msg, e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class MotionSensor2AlternateHeartbeatHandler extends MessageHandler {
-        MotionSensor2AlternateHeartbeatHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonDevice dev = f.getDevice();
-            try {
-                // group 0x0B (11) - alternate heartbeat group
-                InsteonAddress toAddr = msg.getAddr("toAddress");
-                int batteryLevel = toAddr.getHighByte() & 0xff;
-                int lightLevel = toAddr.getMiddleByte() & 0xff;
-                int temperatureLevel = msg.getByte("command2") & 0xff;
-
-                logger.debug("{}: {} got light level: {}, battery level: {}, temperature level: {}", nm(),
-                        dev.getAddress(), lightLevel, batteryLevel, temperatureLevel);
-                feature.publish(new DecimalType(lightLevel), StateChangeType.CHANGED, InsteonDeviceHandler.FIELD,
-                        InsteonDeviceHandler.FIELD_LIGHT_LEVEL);
-                feature.publish(new DecimalType(batteryLevel), StateChangeType.CHANGED, InsteonDeviceHandler.FIELD,
-                        InsteonDeviceHandler.FIELD_BATTERY_LEVEL);
-                feature.publish(new DecimalType(temperatureLevel), StateChangeType.CHANGED, InsteonDeviceHandler.FIELD,
-                        InsteonDeviceHandler.FIELD_TEMPERATURE_LEVEL);
-
-                // per 2844-222 dev doc: working battery level range is 0xd2 - 0x70
-                int batteryPercentage;
-                if (batteryLevel >= 0xd2) {
-                    batteryPercentage = 100;
-                } else if (batteryLevel <= 0x70) {
-                    batteryPercentage = 0;
-                } else {
-                    batteryPercentage = (batteryLevel - 0x70) * 100 / (0xd2 - 0x70);
-                }
-                logger.debug("{}: {} battery percentage: {}", nm(), dev.getAddress(), batteryPercentage);
-                feature.publish(new QuantityType<>(batteryPercentage, SmartHomeUnits.PERCENT), StateChangeType.CHANGED,
-                        InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_BATTERY_PERCENTAGE);
-            } catch (FieldException e) {
-                logger.warn("error parsing {}: ", msg, e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class HiddenDoorSensorDataReplyHandler extends MessageHandler {
-        HiddenDoorSensorDataReplyHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonDevice dev = f.getDevice();
-            if (!msg.isExtended()) {
-                logger.trace("{} device {} ignoring non-extended msg {}", nm(), dev.getAddress(), msg);
-                return;
-            }
-            try {
-                int cmd2 = msg.getByte("command2") & 0xff;
-                switch (cmd2) {
-                    case 0x00: // this is a product data response message
-                        int batteryLevel = msg.getByte("userData4") & 0xff;
-                        int batteryWatermark = msg.getByte("userData7") & 0xff;
-                        logger.debug("{}: {} got light level: {}, battery level: {}", nm(), dev.getAddress(),
-                                batteryWatermark, batteryLevel);
-                        feature.publish(new DecimalType(batteryWatermark), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_BATTERY_WATERMARK_LEVEL);
-                        feature.publish(new DecimalType(batteryLevel), StateChangeType.CHANGED,
-                                InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_BATTERY_LEVEL);
-                        break;
-                    default:
-                        logger.warn("unknown cmd2 = {} in info reply message {}", cmd2, msg);
-                        break;
-                }
-            } catch (FieldException e) {
-                logger.warn("error parsing {}: ", msg, e);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class PowerMeterUpdateHandler extends MessageHandler {
-        PowerMeterUpdateHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            if (msg.isExtended()) {
-                try {
-                    // see iMeter developer notes 2423A1dev-072013-en.pdf
-                    int b7 = msg.getByte("userData7") & 0xff;
-                    int b8 = msg.getByte("userData8") & 0xff;
-                    int watts = (b7 << 8) | b8;
-                    if (watts > 32767) {
-                        watts -= 65535;
-                    }
-
-                    int b9 = msg.getByte("userData9") & 0xff;
-                    int b10 = msg.getByte("userData10") & 0xff;
-                    int b11 = msg.getByte("userData11") & 0xff;
-                    int b12 = msg.getByte("userData12") & 0xff;
-                    BigDecimal kwh = BigDecimal.ZERO;
-                    if (b9 < 254) {
-                        int e = (b9 << 24) | (b10 << 16) | (b11 << 8) | b12;
-                        kwh = new BigDecimal(e * 65535.0 / (1000 * 60 * 60 * 60)).setScale(4, RoundingMode.HALF_UP);
-                    }
-
-                    logger.debug("{}:{} watts: {} kwh: {} ", nm(), f.getDevice().getAddress(), watts, kwh);
-                    feature.publish(new QuantityType<>(kwh, SmartHomeUnits.KILOWATT_HOUR), StateChangeType.CHANGED,
-                            InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_KWH);
-                    feature.publish(new QuantityType<>(watts, SmartHomeUnits.WATT), StateChangeType.CHANGED,
-                            InsteonDeviceHandler.FIELD, InsteonDeviceHandler.FIELD_WATTS);
-                } catch (FieldException e) {
-                    logger.warn("error parsing {}: ", msg, e);
-                }
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class PowerMeterResetHandler extends MessageHandler {
-        PowerMeterResetHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonDevice dev = f.getDevice();
-            logger.debug("{}: power meter {} was reset", nm(), dev.getAddress());
-
-            // poll device to get updated kilowatt hours and watts
-            Msg m = f.makePollMsg();
-            if (m != null) {
-                f.getDevice().enqueueMessage(m, f);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class LastTimeHandler extends MessageHandler {
-        LastTimeHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1a, Msg msg, DeviceFeature f) {
-            feature.publish(new DateTimeType(), StateChangeType.ALWAYS);
-        }
-    }
-
-    @NonNullByDefault
-    public static class ContactRequestReplyHandler extends MessageHandler {
-        ContactRequestReplyHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1a, Msg msg, DeviceFeature f) {
-            byte cmd = 0x00;
-            byte cmd2 = 0x00;
-            try {
-                cmd = msg.getByte("Cmd");
-                cmd2 = msg.getByte("command2");
-            } catch (FieldException e) {
-                logger.debug("{} no cmd found, dropping msg {}", nm(), msg);
-                return;
-            }
-            if (msg.isAckOfDirect() && (f.getQueryStatus() == DeviceFeature.QueryStatus.QUERY_PENDING) && cmd == 0x50) {
-                OpenClosedType oc = (cmd2 == 0) ? OpenClosedType.OPEN : OpenClosedType.CLOSED;
-                logger.debug("{}: set contact {} to: {}", nm(), f.getDevice().getAddress(), oc);
-                feature.publish(oc, StateChangeType.CHANGED);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class ClosedContactHandler extends MessageHandler {
-        ClosedContactHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            feature.publish(OpenClosedType.CLOSED, StateChangeType.ALWAYS);
-        }
-    }
-
-    @NonNullByDefault
-    public static class OpenedContactHandler extends MessageHandler {
-        OpenedContactHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            feature.publish(OpenClosedType.OPEN, StateChangeType.ALWAYS);
-        }
-    }
-
-    @NonNullByDefault
-    public static class OpenedOrClosedContactHandler extends MessageHandler {
-        OpenedOrClosedContactHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            try {
-                byte cmd2 = msg.getByte("command2");
-                switch (cmd1) {
-                    case 0x11:
-                        switch (cmd2) {
-                            case 0x02:
-                                feature.publish(OpenClosedType.CLOSED, StateChangeType.CHANGED);
-                                break;
-                            case 0x01:
-                            case 0x04:
-                                feature.publish(OpenClosedType.OPEN, StateChangeType.CHANGED);
-                                break;
-                            default: // do nothing
-                                break;
-                        }
-                        break;
-                    case 0x13:
-                        switch (cmd2) {
-                            case 0x04:
-                                feature.publish(OpenClosedType.CLOSED, StateChangeType.CHANGED);
-                                break;
-                            default: // do nothing
-                                break;
-                        }
-                        break;
-                }
-            } catch (FieldException e) {
-                logger.debug("{} no cmd2 found, dropping msg {}", nm(), msg);
-                return;
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class ClosedSleepingContactHandler extends MessageHandler {
-        ClosedSleepingContactHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            feature.publish(OpenClosedType.CLOSED, StateChangeType.ALWAYS);
-            if (f.getDevice().hasProductKey(InsteonDeviceHandler.MOTION_SENSOR_II_PRODUCT_KEY)) {
-                sendExtendedQuery(f, (byte) 0x2e, (byte) 03);
-            } else {
-                sendExtendedQuery(f, (byte) 0x2e, (byte) 00);
-            }
-        }
-    }
-
-    @NonNullByDefault
-    public static class OpenedSleepingContactHandler extends MessageHandler {
-        OpenedSleepingContactHandler(DeviceFeature p) {
-            super(p);
-        }
-
-        @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            feature.publish(OpenClosedType.OPEN, StateChangeType.ALWAYS);
-            if (f.getDevice().hasProductKey(InsteonDeviceHandler.MOTION_SENSOR_II_PRODUCT_KEY)) {
-                sendExtendedQuery(f, (byte) 0x2e, (byte) 03);
-            } else {
-                sendExtendedQuery(f, (byte) 0x2e, (byte) 00);
-            }
-        }
-    }
-
-    /**
-     * Triggers a poll when a message comes in. Use this handler to react
-     * to messages that notify of a status update, but don't carry the information
-     * that you are interested in. Example: you send a command to change a setting,
-     * get a DIRECT ack back, but the ack does not have the value of the updated setting.
-     * Then connect this handler to the ACK, such that the device will be polled, and
-     * the settings updated.
+     * Trigger poll message handler
      */
     @NonNullByDefault
     public static class TriggerPollMsgHandler extends MessageHandler {
-        TriggerPollMsgHandler(DeviceFeature p) {
-            super(p);
+        TriggerPollMsgHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            feature.getDevice().doPoll(2000); // 2000 ms delay
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            // trigger poll with delay based on parameter, defaulting to 0 ms
+            long delay = getLongParameter("delay", 0L);
+            feature.triggerPoll(delay);
         }
     }
 
     /**
-     * Flexible handler to extract numerical data from messages.
+     * Custom state abstract message handler based of parameters
      */
     @NonNullByDefault
-    public static class NumberMsgHandler extends MessageHandler {
-        NumberMsgHandler(DeviceFeature p) {
-            super(p);
+    public abstract static class CustomMsgHandler extends MessageHandler {
+        private StateChangeType changeType = StateChangeType.CHANGED;
+
+        CustomMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        public void setStateChangeType(StateChangeType changeType) {
+            this.changeType = changeType;
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
+        public void handleMessage(int group, byte cmd1, Msg msg) {
             try {
-                // first do the bit manipulations to focus on the right area
-                int mask = getIntParameter("mask", 0xFFFF);
-                int rawValue = extractValue(msg, group);
-                int cooked = (rawValue & mask) >> getIntParameter("rshift", 0);
-                // now do an arbitrary transform on the data
-                double value = transform(cooked);
-                // last, multiply with factor and add an offset
-                double dvalue = getDoubleParameter("offset", 0) + value * getDoubleParameter("factor", 1.0);
-
-                @Nullable
-                State state;
-                String scale = getStringParameter("scale", null);
-                if (scale != null && scale.equals("celsius")) {
-                    state = new QuantityType<>(dvalue, SIUnits.CELSIUS);
-                } else if (scale != null && scale.equals("fahrenheit")) {
-                    state = new QuantityType<>(dvalue, ImperialUnits.FAHRENHEIT);
-                } else {
-                    state = new DecimalType(dvalue);
+                // extract raw value from message
+                int raw = getRawValue(group, msg);
+                // apply mask and right shift bit manipulation
+                int cooked = (raw & getIntParameter("mask", 0xFF)) >> getIntParameter("rshift", 0);
+                // multiply with factor and add offset
+                double value = cooked * getDoubleParameter("factor", 1.0) + getDoubleParameter("offset", 0.0);
+                // get state to publish
+                State state = getState(group, value);
+                // store extracted cooked message value
+                feature.setLastMsgValue(value);
+                // publish state if defined
+                if (state != null) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("{}: device {} {} changed to {}", nm(), feature.getDevice().getAddress(),
+                                feature.getName(), state);
+                    }
+                    feature.publish(state, changeType);
                 }
-                feature.publish(state, StateChangeType.CHANGED);
             } catch (FieldException e) {
-                logger.warn("error parsing {}: ", msg, e);
+                logger.warn("{}: error parsing msg {}", nm(), msg, e);
             }
         }
 
-        public int transform(int raw) {
-            return (raw);
+        private int getRawValue(int group, Msg msg) throws FieldException {
+            // determine data field name based on parameter, default to cmd2 if is standard message
+            String field = getStringParameter("field", !msg.isExtended() ? "command2" : "");
+            if (field.equals("")) {
+                throw new FieldException("handler misconfigured, no field parameter specified!");
+            }
+            if (field.startsWith("address") && !msg.isBroadcast()) {
+                throw new FieldException("not broadcast msg, cannot use address bytes!");
+            }
+            // return raw value based on field name
+            switch (field) {
+                case "group":
+                    return group;
+                case "addressHighByte":
+                    // return broadcast address high byte value
+                    return msg.getAddress("toAddress").getHighByte() & 0xFF;
+                case "addressMiddleByte":
+                    // return broadcast address middle byte value
+                    return msg.getAddress("toAddress").getMiddleByte() & 0xFF;
+                case "addressLowByte":
+                    // return broadcast address low byte value
+                    return msg.getAddress("toAddress").getLowByte() & 0xFF;
+                default:
+                    // return integer value starting from field name up to 4-bytes in size based on parameter
+                    return msg.getBytesAsInt(field, getIntParameter("num_bytes", 1));
+            }
         }
 
-        private int extractValue(Msg msg, int group) throws FieldException {
-            String lowByte = getStringParameter("low_byte", "");
-            if (lowByte.equals("")) {
-                logger.warn("{} handler misconfigured, missing low_byte!", nm());
-                return 0;
-            }
-            int value = 0;
-            if (lowByte.equals("group")) {
-                value = group;
+        public abstract @Nullable State getState(int group, double value);
+    }
+
+    /**
+     * Custom bitmask mmessage handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomBitmaskMsgHandler extends CustomMsgHandler {
+        CustomBitmaskMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            State state = null;
+            // get bit number based on parameter
+            int bit = getBitNumber();
+            // get bit flag state from bitmask, if bit defined
+            if (bit != -1) {
+                boolean isSet = BitwiseUtils.isBitFlagSet((int) value, bit);
+                state = getBitFlagState(isSet);
             } else {
-                value = msg.getByte(lowByte) & 0xFF;
+                logger.debug("{}: no valid bit number defined for {}", nm(), feature.getName());
             }
-            String highByte = getStringParameter("high_byte", "");
-            if (!highByte.equals("")) {
-                value |= (msg.getByte(highByte) & 0xFF) << 8;
-            }
-            return (value);
+            return state;
+        }
+
+        public int getBitNumber() {
+            int bit = getIntParameter("bit", -1);
+            // return bit if valid (0-7), otherwise -1
+            return bit >= 0 && bit <= 7 ? bit : -1;
+        }
+
+        public State getBitFlagState(boolean isSet) {
+            return isSet ^ getBooleanParameter("inverted", false) ? OnOffType.ON : OnOffType.OFF;
         }
     }
 
     /**
-     * Convert system mode field to number 0...4. Insteon has two different
-     * conventions for numbering, we use the one of the status update messages
+     * Custom cache mmessage handler based of parameters
      */
     @NonNullByDefault
-    public static class ThermostatSystemModeMsgHandler extends NumberMsgHandler {
-        ThermostatSystemModeMsgHandler(DeviceFeature p) {
-            super(p);
+    public static class CustomCacheMsgHandler extends CustomMsgHandler {
+        CustomCacheMsgHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public int transform(int raw) {
-            switch (raw) {
-                case 0:
-                    return (0); // off
-                case 1:
-                    return (3); // auto
-                case 2:
-                    return (1); // heat
-                case 3:
-                    return (2); // cool
-                case 4:
-                    return (4); // program
+        public @Nullable State getState(int group, double value) {
+            // only cache extracted message value
+            // mostly used for hidden features which are used by others
+            return null;
+        }
+    }
+
+    /**
+     * Custom decimal type message handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomDecimalMsgHandler extends CustomMsgHandler {
+        CustomDecimalMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            return new DecimalType(value);
+        }
+    }
+
+    /**
+     * Custom on/off type message handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomOnOffMsgHandler extends CustomMsgHandler {
+        CustomOnOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int onLevel =  getIntParameter("on", 0xFF);
+            int offLevel = getIntParameter("off", 0x00);
+            return value == onLevel ? OnOffType.ON : value == offLevel ? OnOffType.OFF : null;
+        }
+    }
+
+    /**
+     * Custom percent type message handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomPercentMsgHandler extends CustomMsgHandler {
+        CustomPercentMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int minValue = getIntParameter("min", 0x00);
+            int maxValue = getIntParameter("max", 0xFF);
+            double clampValue = Math.max(minValue, Math.min(maxValue, value));
+            int level = (int) Math.round((clampValue - minValue) / (maxValue - minValue) * 100);
+            return new PercentType(level);
+        }
+    }
+
+    /**
+     * Custom dimensionless quantity type message handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomDimensionlessMsgHandler extends CustomMsgHandler {
+        CustomDimensionlessMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int minValue = getIntParameter("min", 0);
+            int maxValue = getIntParameter("max", 100);
+            double clampValue = Math.max(minValue, Math.min(maxValue, value));
+            int level = (int) Math.round((clampValue - minValue) * 100 / (maxValue - minValue));
+            return new QuantityType<Dimensionless>(level, SmartHomeUnits.PERCENT);
+        }
+    }
+
+    /**
+     * Custom temperature quantity type message handler based of parameters
+     */
+    @NonNullByDefault
+    public static class CustomTemperatureMsgHandler extends CustomMsgHandler {
+        CustomTemperatureMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            Unit<Temperature> unit = getTemperatureUnit();
+            return new QuantityType<Temperature>(value, unit);
+        }
+
+        public Unit<Temperature> getTemperatureUnit() {
+            String scale = getStringParameter("scale", "");
+            switch (scale) {
+                case "celsius":
+                    return SIUnits.CELSIUS;
+                case "fahrenheit":
+                    return ImperialUnits.FAHRENHEIT;
                 default:
-                    break;
+                    logger.debug("{}: no valid temperature scale parameter found, defaulting to: CELSIUS", nm());
+                    return SIUnits.CELSIUS;
             }
-            return (4); // when in doubt assume to be in "program" mode
         }
     }
 
     /**
-     * Handle reply to system mode change command
+     * Custom time quantity type message handler based of parameters
      */
     @NonNullByDefault
-    public static class ThermostatSystemModeReplyHandler extends NumberMsgHandler {
-        ThermostatSystemModeReplyHandler(DeviceFeature p) {
-            super(p);
+    public static class CustomTimeMsgHandler extends CustomMsgHandler {
+        CustomTimeMsgHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public int transform(int raw) {
-            switch (raw) {
-                case 0x09:
-                    return (0); // off
-                case 0x04:
-                    return (1); // heat
-                case 0x05:
-                    return (2); // cool
-                case 0x06:
-                    return (3); // auto
-                case 0x0A:
-                    return (4); // program
+        public @Nullable State getState(int group, double value) {
+            Unit<Time> unit = getTimeUnit();
+            return new QuantityType<Time>(value, unit);
+        }
+
+        public Unit<Time> getTimeUnit() {
+            String scale = getStringParameter("scale", "");
+            switch (scale) {
+                case "hour":
+                    return SmartHomeUnits.HOUR;
+                case "minute":
+                    return SmartHomeUnits.MINUTE;
+                case "second":
+                    return SmartHomeUnits.SECOND;
                 default:
-                    break;
+                    logger.debug("{}: no valid time scale parameter found, defaulting to: SECONDS", nm());
+                    return SmartHomeUnits.SECOND;
             }
-            return (4); // when in doubt assume to be in "program" mode
         }
     }
 
     /**
-     * Handle reply to fan mode change command
+     * Last time message handler
      */
     @NonNullByDefault
-    public static class ThermostatFanModeReplyHandler extends NumberMsgHandler {
-        ThermostatFanModeReplyHandler(DeviceFeature p) {
-            super(p);
+    public static class LastTimeMsgHandler extends MessageHandler {
+        LastTimeMsgHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public int transform(int raw) {
-            switch (raw) {
-                case 0x08:
-                    return (0); // auto
-                case 0x07:
-                    return (1); // always on
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            Instant i = Instant.ofEpochMilli(msg.getTimestamp());
+            ZonedDateTime timestamp = ZonedDateTime.ofInstant(i, ZoneId.systemDefault());
+            ZonedDateTime lastTimestamp = getLastTimestamp();
+            // set last time if not defined yet or message timestamp is greater than last value
+            if (lastTimestamp == null || timestamp.compareTo(lastTimestamp) > 0) {
+                feature.publish(new DateTimeType(timestamp), StateChangeType.ALWAYS);
+            }
+        }
+
+        private @Nullable ZonedDateTime getLastTimestamp() {
+            State state = feature.getLastState();
+            return state != null ? ((DateTimeType) state).getZonedDateTime() : null;
+        }
+    }
+
+    /**
+     * Button press event message handler
+     */
+    @NonNullByDefault
+    public static class ButtonPressEventHandler extends MessageHandler {
+        ButtonPressEventHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            String event = getEvent(cmd1);
+            if (event != null) {
+                feature.triggerEvent(event);
+                feature.pollRelatedDevices();
+            }
+        }
+
+        private @Nullable String getEvent(byte cmd) {
+            switch (cmd) {
+                case 0x11:
+                    return "PRESSED_ON";
+                case 0x12:
+                    return "DOUBLE_PRESSED_ON";
+                case 0x13:
+                    return "PRESSED_OFF";
+                case 0x14:
+                    return "DOUBLE_PRESSED_OFF";
                 default:
-                    break;
+                    logger.warn("{}: got unexpected command value: {}", nm(), ByteUtils.getHexString(cmd));
+                    return null;
             }
-            return (0); // when in doubt assume to be auto mode
         }
     }
 
     /**
-     * Handle reply to fanlinc fan speed change command
+     * Button hold event message handler
      */
     @NonNullByDefault
-    public static class FanLincFanReplyHandler extends NumberMsgHandler {
-        FanLincFanReplyHandler(DeviceFeature p) {
-            super(p);
+    public static class ButtonHoldEventHandler extends MessageHandler {
+        ButtonHoldEventHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public int transform(int raw) {
-            switch (raw) {
+        public boolean isDuplicate(Msg msg) {
+            // Disable duplicate elimination because
+            // there are no cleanup or success messages for button hold event.
+            return (false);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            try {
+                byte cmd2 = msg.getByte("command2");
+                String event = cmd2 == 0x01 ? "HELD_UP" : "HELD_DOWN";
+                feature.triggerEvent(event);
+            } catch (FieldException e) {
+                logger.warn("{}: error parsing msg: {}", nm(), msg, e);
+            }
+        }
+    }
+
+    /**
+     * Button release event message handler
+     */
+    @NonNullByDefault
+    public static class ButtonReleaseEventHandler extends MessageHandler {
+        ButtonReleaseEventHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public boolean isDuplicate(Msg msg) {
+            // Disable duplicate elimination because
+            // there are no cleanup or success messages for button release event.
+            return (false);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            feature.triggerEvent("RELEASED");
+            feature.pollRelatedDevices();
+        }
+    }
+
+    /**
+     * Insteon engine reply message handler
+     */
+    @NonNullByDefault
+    public static class InsteonEngineReplyHandler extends MessageHandler {
+        InsteonEngineReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            try {
+                int version = msg.getInt("command2");
+                InsteonDevice dev = feature.getDevice();
+                // set device insteon engine
+                dev.setInsteonEngine(InsteonEngine.valueOf(version));
+                // continue device polling
+                dev.doPoll(0L);
+            } catch (FieldException e) {
+                logger.warn("{}: error parsing msg: {}", nm(), msg, e);
+            }
+        }
+    }
+
+    /**
+     * Product data message handler
+     */
+    @NonNullByDefault
+    public static class ProductDataMsgHandler extends MessageHandler {
+        ProductDataMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            try {
+                String productKey = msg.getHexString("userData2", 3);
+                String deviceCategory = msg.getHexString("userData5");
+                String subCategory = msg.getHexString("userData6");
+                int firmwareVersion = msg.getInt("userData7");
+
+                ProductData productData = ProductDataLoader.instance().getProductData(deviceCategory, subCategory,
+                        productKey.equals("0x000000") ? null : productKey);
+                productData.setFirmwareVersion(firmwareVersion);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("{}: got product data for {} as {}", nm(), feature.getDevice().getAddress(),
+                            productData);
+                }
+                feature.getDevice().updateProductData(productData);
+            } catch (FieldException e) {
+                logger.warn("{}: error parsing msg: {}", nm(), msg, e);
+            }
+        }
+    }
+
+    /**
+     * SET button pressed message handler
+     */
+    @NonNullByDefault
+    public static class SetButtonPressedMsgHandler extends MessageHandler {
+        SetButtonPressedMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            try {
+                InsteonAddress addr = msg.getAddress("toAddress");
+                String deviceCategory = ByteUtils.getHexString(addr.getHighByte());
+                String subCategory = ByteUtils.getHexString(addr.getMiddleByte());
+                int firmwareVersion = addr.getLowByte() & 0xFF;
+                int hardwareVersion = msg.getInt("command2");
+
+                ProductData productData = ProductDataLoader.instance().getProductData(deviceCategory, subCategory);
+                productData.setFirmwareVersion(firmwareVersion);
+                productData.setHardwareVersion(hardwareVersion);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("{}: got product data for {} as {}", nm(), feature.getDevice().getAddress(),
+                            productData);
+                }
+                feature.getDevice().updateProductData(productData);
+            } catch (FieldException e) {
+                logger.warn("{}: error parsing msg: {}", nm(), msg, e);
+            }
+        }
+    }
+
+    /**
+     * On/Off abstract message handler
+     */
+    @NonNullByDefault
+    public abstract static class OnOffMsgHandler extends MessageHandler {
+        OnOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            String mode = getStringParameter("mode", "REGULAR");
+            State state = getState(mode);
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: device {} changed to {} {}", nm(), feature.getDevice().getAddress(), state, mode);
+            }
+            feature.publish(state, StateChangeType.ALWAYS);
+        }
+
+        public abstract State getState(String mode);
+    }
+
+    /**
+     * Dimmer on message handler
+     */
+    @NonNullByDefault
+    public static class DimmerOnMsgHandler extends OnOffMsgHandler {
+        DimmerOnMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getState(String mode) {
+            switch (mode) {
+                case "FAST":
+                    // set to 100% for fast on change
+                    return PercentType.HUNDRED;
+                default:
+                    // set to device on level if the current state not at that level already, defaulting to 100%
+                    // this is due to subsequent dimmer on button press cycling between on level and 100%
+                    State state = feature.getDevice().getLastState(ON_LEVEL_FEATURE);
+                    return state != null && !state.equals(feature.getLastState()) ? state : PercentType.HUNDRED;
+            }
+        }
+    }
+
+    /**
+     * Dimmer off message handler
+     */
+    @NonNullByDefault
+    public static class DimmerOffMsgHandler extends OnOffMsgHandler {
+        DimmerOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getState(String mode) {
+            return PercentType.ZERO;
+        }
+    }
+
+    /**
+     * Dimmer request reply message handler
+     */
+    @NonNullByDefault
+    public static class DimmerRequestReplyHandler extends CustomMsgHandler {
+        DimmerRequestReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            // trigger poll if is my brigthen/dim command reply message
+            if ((cmd1 == 0x15 || cmd1 == 0x16) && feature.isMyDirectAckOrNack(msg)) {
+                feature.triggerPoll(0L);
+            } else {
+                super.handleMessage(group, cmd1, msg);
+            }
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int level = (int) Math.round(value * 100 / 255.0);
+            return new PercentType(level);
+        }
+    }
+
+    /**
+     * Switch on message handler
+     */
+    @NonNullByDefault
+    public static class SwitchOnMsgHandler extends OnOffMsgHandler {
+        SwitchOnMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getState(String mode) {
+            return OnOffType.ON;
+        }
+    }
+
+    /**
+     * Switch off message handler
+     */
+    @NonNullByDefault
+    public static class SwitchOffMsgHandler extends OnOffMsgHandler {
+        SwitchOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getState(String mode) {
+            return OnOffType.OFF;
+        }
+    }
+
+    /**
+     * Switch request reply message handler
+     */
+    @NonNullByDefault
+    public static class SwitchRequestReplyHandler extends CustomMsgHandler {
+        SwitchRequestReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int level = (int) value;
+            State state = null;
+            if (level == 0x00 || level == 0xFF) {
+                state = level == 0xFF ? OnOffType.ON : OnOffType.OFF;
+            } else {
+                logger.warn("{}: ignoring unexpected level received {}", nm(), ByteUtils.getHexString(level));
+            }
+            return state;
+        }
+    }
+
+    /**
+     * Keypad button on message handler
+     */
+    @NonNullByDefault
+    public static class KeypadButtonOnMsgHandler extends SwitchOnMsgHandler {
+        KeypadButtonOnMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            super.handleMessage(group, cmd1, msg);
+            // trigger poll to account for radio button group changes
+            feature.triggerPoll(0L);
+        }
+    }
+
+    /**
+     * Keypad button off message handler
+     */
+    @NonNullByDefault
+    public static class KeypadButtonOffMsgHandler extends SwitchOffMsgHandler {
+        KeypadButtonOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            super.handleMessage(group, cmd1, msg);
+            // trigger poll to account for radio button group changes
+            feature.triggerPoll(0L);
+        }
+    }
+
+    /**
+     * Keypad bitmask message handler
+     */
+    @NonNullByDefault
+    public static class KeypadBitmaskMsgHandler extends CustomBitmaskMsgHandler {
+        KeypadBitmaskMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public int getBitNumber() {
+            int bit = getGroup() - 1;
+            // return bit if representing keypad button 2-8, otherwise -1
+            return bit >= 1 && bit <= 7 ? bit : -1;
+        }
+    }
+
+    /**
+     * Keypad button reply message handler
+     */
+    @NonNullByDefault
+    public static class KeypadButtonReplyHandler extends KeypadBitmaskMsgHandler {
+        KeypadButtonReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            // trigger poll if is my command reply message (0x2E)
+            if (cmd1 == 0x2E && feature.isMyDirectAckOrNack(msg)) {
+                feature.triggerPoll(0L);
+            } else {
+                super.handleMessage(group, cmd1, msg);
+            }
+        }
+    }
+
+    /**
+     * Operating flags reply message handler
+     */
+    @NonNullByDefault
+    public static class OpFlagsReplyHandler extends CustomBitmaskMsgHandler {
+        OpFlagsReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            // trigger poll if is my command reply message (0x20)
+            if (cmd1 == 0x20 && feature.isMyDirectAckOrNack(msg)) {
+                feature.triggerPoll(0L);
+            } else {
+                super.handleMessage(group, cmd1, msg);
+            }
+        }
+    }
+
+    /**
+     * Keypad button config operating flag reply message handler
+     */
+    @NonNullByDefault
+    public static class KeypadButtonConfigReplyHandler extends OpFlagsReplyHandler {
+        KeypadButtonConfigReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getBitFlagState(boolean is8Button) {
+            // update device type based on button config
+            updateDeviceType(is8Button ? "8" : "6");
+            // return button config state
+            return new StringType(is8Button ? "8-BUTTON" : "6-BUTTON");
+        }
+
+        private void updateDeviceType(String buttonConfig) {
+            InsteonDevice dev = feature.getDevice();
+            String curType = dev.getProductData().getDeviceType().getName();
+            String newType = curType.replaceAll(".$", buttonConfig);
+            if (!curType.equals(newType)) {
+                DeviceType dt = DeviceTypeLoader.instance().getDeviceType(newType);
+                if (dt == null) {
+                    logger.warn("{}: unknown device type {}", nm(), newType);
+                } else {
+                    logger.trace("{}: updating to device type {} for {}", nm(), dt.getName(), dev.getAddress());
+                    // set product data device type
+                    dev.getProductData().setDeviceType(dt);
+                    // reset device features
+                    dev.resetFeatures();
+                    // poll updated device
+                    dev.doPoll(0L);
+                }
+            }
+        }
+    }
+
+    /**
+     * Ramp rate extended status message handler
+     */
+    @NonNullByDefault
+    public static class RampRateMsgHandler extends CustomMsgHandler {
+        RampRateMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        private static final double[] rampRateTimes = {
+            0.1, 0.2, 0.3, 0.5, 2, 4.5, 6.5, 8.5, 19, 21.5, 23.5, 26, 28, 30, 32, 34,
+            38.5, 43, 47, 60, 90, 120, 150, 180, 210, 240, 270, 300, 360, 420, 480
+        };
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            double rateTime = getRateTime((int) value);
+            return (rateTime >= 0) ? new QuantityType<Time>(rateTime, SmartHomeUnits.SECOND) : UnDefType.UNDEF;
+        }
+
+        private double getRateTime(int value) {
+            switch (value) {
                 case 0x00:
-                    return (0); // off
-                case 0x55:
-                    return (1); // low
-                case 0xAA:
-                    return (2); // medium
-                case 0xFF:
-                    return (3); // high
+                    return 2; // 0x00 setting defaults to 2s ramp rate, based on developer documentation
                 default:
-                    logger.warn("fanlinc got unexpected level: {}", raw);
+                    int index = rampRateTimes.length - value;
+                    if (index < 0) {
+                       logger.warn("{}: got unexpected ramp rate message: {}", nm(), ByteUtils.getHexString(value));
+                       return -1;
+                    }
+                    return rampRateTimes[index];
             }
-            return (0); // when in doubt assume to be off
         }
     }
+
+    /**
+     * Sensor abstract message handler
+     */
+    @NonNullByDefault
+    public abstract static class SensorMsgHandler extends CustomMsgHandler {
+        SensorMsgHandler(DeviceFeature f) {
+            super(f);
+            setStateChangeType(StateChangeType.ALWAYS);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            super.handleMessage(group, cmd1, msg);
+            // poll battery powered sensor device while awake
+            InsteonDevice dev = feature.getDevice();
+            if (dev.isBatteryPowered()) {
+              // set delay to 1500ms to allow all-link cleanup msg to be processed beforehand
+              // only on non-replayed message, otherwise no delay
+                long delay = msg.isReplayed() ? 0L : 1500L;
+                dev.doPoll(delay);
+            }
+            // poll related devices
+            feature.pollRelatedDevices();
+        }
+    }
+
+
+    /**
+     * Contact open message handler
+     */
+    @NonNullByDefault
+    public static class ContactOpenMsgHandler extends SensorMsgHandler {
+        ContactOpenMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            return OpenClosedType.OPEN;
+        }
+    }
+
+    /**
+     * Contact closed message handler
+     */
+    @NonNullByDefault
+    public static class ContactClosedMsgHandler extends SensorMsgHandler {
+        ContactClosedMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            return OpenClosedType.CLOSED;
+        }
+    }
+
+    /**
+     * Contact request reply message handler
+     */
+    @NonNullByDefault
+    public static class ContactRequestReplyHandler extends CustomMsgHandler {
+        ContactRequestReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            return value == 0 ? OpenClosedType.OPEN : OpenClosedType.CLOSED;
+        }
+    }
+
+    /**
+     * Wireless sensor contact open message handler
+     */
+    @NonNullByDefault
+    public static class WirelessSensorContactOpenMsgHandler extends SensorMsgHandler {
+        WirelessSensorContactOpenMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            // return open state if group parameter configured
+            if (getGroup() != -1) {
+                return OpenClosedType.OPEN;
+            }
+            switch (group) {
+                case 1: // open event
+                case 4: // heartbeat
+                    return OpenClosedType.OPEN;
+                default: // ignore
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Wireless sensor contact closed message handler
+     */
+    @NonNullByDefault
+    public static class WirelessSensorContactClosedMsgHandler extends SensorMsgHandler {
+        WirelessSensorContactClosedMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            // return closed state if group parameter configured
+            if (getGroup() != -1) {
+                return OpenClosedType.CLOSED;
+            }
+            switch (group) {
+                case 1: // closed event
+                case 4: // heartbeat
+                    return OpenClosedType.CLOSED;
+                default: // ignore
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Wireless sensor state on message handler
+     */
+    @NonNullByDefault
+    public static class WirelessSensorStateOnMsgHandler extends SensorMsgHandler {
+        WirelessSensorStateOnMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            // return on state if group parameter configured
+            if (getGroup() != -1) {
+                return OnOffType.ON;
+            }
+            switch (group) {
+                case 1: // on event
+                case 4: // heartbeat
+                    return OnOffType.ON;
+                default: // ignore
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Wireless sensor state off message handler
+     */
+    @NonNullByDefault
+    public static class WirelessSensorStateOffMsgHandler extends SensorMsgHandler {
+        WirelessSensorStateOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            // return off state if group parameter configured
+            if (getGroup() != -1) {
+                return OnOffType.OFF;
+            }
+            switch (group) {
+                case 1: // off event
+                case 4: // heartbeat
+                    return OnOffType.OFF;
+                default: // ignore
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Leak sensor state on message handler
+     */
+    @NonNullByDefault
+    public static class LeakSensorStateOnMsgHandler extends SensorMsgHandler {
+        LeakSensorStateOnMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            switch (group) {
+                case 1: // dry event
+                case 4: // heartbeat (dry)
+                    return OnOffType.OFF;
+                case 2: // wet event
+                    return OnOffType.ON;
+                default: // ignore
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Leak sensor state off message handler
+     */
+    @NonNullByDefault
+    public static class LeakSensorStateOffMsgHandler extends SensorMsgHandler {
+        LeakSensorStateOffMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            switch (group) {
+                case 4: // heartbeat (wet)
+                    return OnOffType.ON;
+                default: // ignore
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Motion sensor 2 temperature message handler
+     */
+    @NonNullByDefault
+    public static class MotionSensor2TemperatureMsgHandler extends CustomMsgHandler {
+        MotionSensor2TemperatureMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            boolean isBatteryPowered = feature.getDevice().isBatteryPowered();
+            // temperature (°F) = 0.73 * value - 20.53 (battery powered); 0.72 * value - 24.61 (usb powered)
+            double temperature = isBatteryPowered ? 0.73 * value - 20.53 : 0.72 * value - 24.61;
+            return new QuantityType<Temperature>(temperature, ImperialUnits.FAHRENHEIT);
+        }
+    }
+
+    /**
+     * Motion sensor 2 battery powered reply message handler
+     */
+    @NonNullByDefault
+    public static class MotionSensor2BatteryPoweredReplyHandler extends CustomMsgHandler {
+        MotionSensor2BatteryPoweredReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            // stage flag bit 1 = USB Powered
+            boolean isBatteryPowered = !BitwiseUtils.isBitFlagSet((int) value, 1);
+            // update device based on battery powered flag
+            updateDeviceFlag(isBatteryPowered);
+            // return battery powered state
+            return isBatteryPowered ? OnOffType.ON : OnOffType.OFF;
+        }
+
+        private void updateDeviceFlag(boolean isBatteryPowered) {
+            InsteonDevice dev = feature.getDevice();
+            // update device batteryPowered flag
+            dev.setFlag("batteryPowered", isBatteryPowered);
+            // stop device polling if battery powered, otherwise start it
+            if (isBatteryPowered) {
+                dev.stopPolling();
+            } else {
+                dev.startPolling();
+            }
+        }
+    }
+
+    /**
+     * Smoke sensor alarm message handler
+     */
+    @NonNullByDefault
+    public static class SmokeSensorAlarmMsgHandler extends SensorMsgHandler {
+        SmokeSensorAlarmMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int alarm = getIntParameter("alarm", -1);
+            State state = null;
+            if (group == alarm) {
+                state = OnOffType.ON;  // alarm event
+            } else if (group == 0x05) {
+                state = OnOffType.OFF; // clear event
+            }
+            return state;
+        }
+    }
+
+    /**
+     * FanLinc fan mode reply message handler
+     */
+    @NonNullByDefault
+    public static class FanLincFanReplyHandler extends CustomMsgHandler {
+        FanLincFanReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0x00:
+                    return "OFF";
+                case 0x55:
+                    return "LOW";
+                case 0xAA:
+                    return "MEDIUM";
+                case 0xFF:
+                    return "HIGH";
+                default:
+                    logger.warn("{}: got unexpected fan mode reply value: {}", nm(), ByteUtils.getHexString(value));
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * I/O linc momentary duration message handler
+     */
+    @NonNullByDefault
+    public static class IOLincMomentaryDurationMsgHandler extends CustomMsgHandler {
+        IOLincMomentaryDurationMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int duration = getDuration((int) value);
+            return new QuantityType<Time>(duration, SmartHomeUnits.SECOND);
+        }
+
+        private int getDuration(int value) {
+            int prescaler = value >> 8; // high byte
+            int delay = value & 0xFF; // low byte
+            if (delay == 0) {
+                delay = 255;
+            }
+            return delay * prescaler / 10;
+        }
+    }
+
+    /**
+     * I/O linc relay mode reply message handler
+     */
+    @NonNullByDefault
+    public static class IOLincRelayModeReplyHandler extends CustomMsgHandler {
+        IOLincRelayModeReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            // trigger poll if is my command reply message (0x20)
+            if (cmd1 == 0x20 && feature.isMyDirectAckOrNack(msg)) {
+                feature.triggerPoll(5000L); // 5000ms delay to allow all op flag commands to be processed
+            } else {
+                super.handleMessage(group, cmd1, msg);
+            }
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode;
+            if (!BitwiseUtils.isBitFlagSet((int) value, 3)) {
+                // set mode to latching, when momentary mode op flag (3) is off
+                mode = "LATCHING";
+            } else if (BitwiseUtils.isBitFlagSet((int) value, 7)) {
+                // set mode to momentary c, when momentary sensor follow op flag (7) is on
+                mode = "MOMENTARY_C";
+            } else if (BitwiseUtils.isBitFlagSet((int) value, 4)) {
+                // set mode to momentary b, when momentary trigger on/off op flag (4) is on
+                mode = "MOMENTARY_B";
+            } else {
+                // set mode to momentary a, otherwise
+                mode = "MOMENTARY_A";
+            }
+            return new StringType(mode);
+        }
+    }
+
+    /**
+     *  Outlet top reply message handler
+     *
+     *  0x00 = Both Outlets Off
+     *  0x01 = Only Top Outlet On
+     *  0x02 = Only Bottom Outlet On
+     *  0x03 = Both Outlets On
+     */
+    @NonNullByDefault
+    public static class OutletTopReplyHandler extends CustomMsgHandler {
+        OutletTopReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            return value == 0x01 || value == 0x03 ? OnOffType.ON : OnOffType.OFF;
+        }
+    }
+
+    /**
+     * Outlet bottom reply message handler
+     *
+     *  0x00 = Both Outlets Off
+     *  0x01 = Only Top Outlet On
+     *  0x02 = Only Bottom Outlet On
+     *  0x03 = Both Outlets On
+     */
+    @NonNullByDefault
+    public static class OutletBottomReplyHandler extends CustomMsgHandler {
+        OutletBottomReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            return value == 0x02 || value == 0x03 ? OnOffType.ON : OnOffType.OFF;
+        }
+    }
+
+    /**
+     * Power meter kWh message handler
+     */
+    @NonNullByDefault
+    public static class PowerMeterKWhMsgHandler extends CustomMsgHandler {
+        PowerMeterKWhMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            BigDecimal kWh = getKWh((int) value);
+            return new QuantityType<Energy>(kWh, SmartHomeUnits.KILOWATT_HOUR);
+        }
+
+        private BigDecimal getKWh(int energy) {
+            BigDecimal kWh = BigDecimal.ZERO;
+            int highByte = energy >> 24;
+            if (highByte < 254) {
+                kWh = new BigDecimal(energy * 65535.0 / (1000 * 60 * 60 * 60)).setScale(4, RoundingMode.HALF_UP);
+            }
+            return kWh;
+        }
+    }
+
+    /**
+     * Power meter watts message handler
+     */
+    @NonNullByDefault
+    public static class PowerMeterWattsMsgHandler extends CustomMsgHandler {
+        PowerMeterWattsMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            int watts = getWatts((int) value);
+            return new QuantityType<Power>(watts, SmartHomeUnits.WATT);
+        }
+
+        private int getWatts(int watts) {
+            if (watts > 32767) {
+                watts -= 65535;
+            }
+            return watts;
+        }
+    }
+
+    /**
+     * Thermostat fan mode message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatFanModeMsgHandler extends CustomMsgHandler {
+        ThermostatFanModeMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0:
+                    return "AUTO";
+                case 1:
+                    return "ON";
+                default:
+                    logger.warn("{}: got unexpected fan mode value: {}", nm(), value);
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Thermostat fan mode reply message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatFanModeReplyHandler extends CustomMsgHandler {
+        ThermostatFanModeReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0x08:
+                    return "AUTO";
+                case 0x07:
+                    return "ON";
+                default:
+                    logger.warn("{}: got unexpected fan mode reply value: {}", nm(), ByteUtils.getHexString(value));
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Termostat system mode message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatSystemModeMsgHandler extends CustomMsgHandler {
+        ThermostatSystemModeMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0:
+                    return "OFF";
+                case 1:
+                    return "AUTO";
+                case 2:
+                    return "HEAT";
+                case 3:
+                    return "COOL";
+                case 4:
+                    return "PROGRAM";
+                default:
+                    logger.warn("{}: got unexpected system mode value: {}", nm(), value);
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Thermostat system mode reply message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatSystemModeReplyHandler extends CustomMsgHandler {
+        ThermostatSystemModeReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0x09:
+                    return "OFF";
+                case 0x04:
+                    return "HEAT";
+                case 0x05:
+                    return "COOL";
+                case 0x06:
+                    return "AUTO";
+                case 0x0A:
+                    return "PROGRAM";
+                default:
+                    logger.warn("{}: got unexpected system mode reply value: {}", nm(), ByteUtils.getHexString(value));
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Venstar thermostat system mode message handler
+     */
+    @NonNullByDefault
+    public static class VenstarSystemModeMsgHandler extends CustomMsgHandler {
+        VenstarSystemModeMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0:
+                    return "OFF";
+                case 1:
+                    return "HEAT";
+                case 2:
+                    return "COOL";
+                case 3:
+                    return "AUTO";
+                case 4:
+                    return "PROGRAM_AUTO";
+                case 5:
+                    return "PROGRAM_HEAT";
+                case 6:
+                    return "PROGRAM_COOL";
+                default:
+                    logger.warn("{}: got unexpected system mode value: {}", nm(), value);
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Venstar thermostat system mode message handler
+     */
+    @NonNullByDefault
+    public static class VenstarSystemModeReplyHandler extends CustomMsgHandler {
+        VenstarSystemModeReplyHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String mode = getMode((int) value);
+            return (mode != null) ? new StringType(mode) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getMode(int value) {
+            switch (value) {
+                case 0x09:
+                    return "OFF";
+                case 0x04:
+                    return "HEAT";
+                case 0x05:
+                    return "COOL";
+                case 0x06:
+                    return "AUTO";
+                case 0x0A:
+                    return "PROGRAM_HEAT";
+                case 0x0B:
+                    return "PROGRAM_COOL";
+                case 0x0C:
+                    return "PROGRAM_AUTO";
+                default:
+                    logger.warn("{}: got unexpected system mode reply value: {}", nm(), ByteUtils.getHexString(value));
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Thermostat system status message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatSystemStateMsgHandler extends CustomMsgHandler {
+        ThermostatSystemStateMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String status = getStatus((int) value);
+            return (status != null) ? new StringType(status) : UnDefType.UNDEF;
+        }
+
+        private @Nullable String getStatus(int value) {
+            switch (value) {
+                case 0:
+                    return "OFF";
+                case 1:
+                    return "COOLING";
+                case 2:
+                    return "HEATING";
+                case 3:
+                    return "DEHUMIDIFYING";
+                case 4:
+                    return "HUMIDIFYING";
+                default:
+                    logger.warn("{}: got unexpected system status value: {}", nm(), value);
+                    return null;
+            }
+        }
+    }
+
+    /**
+     * Venstar thermostat temperature message handler
+     */
+    @NonNullByDefault
+    public static class VenstarTemperatureMsgHandler extends CustomTemperatureMsgHandler {
+        VenstarTemperatureMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public Unit<Temperature> getTemperatureUnit() {
+            // use temperature format last state to determine temperature unit, defaulting to fahrenheit
+            State state = feature.getDevice().getLastState(TEMPERATURE_FORMAT_FEATURE);
+            String format = state == null ? "FAHRENHEIT" : ((StringType) state).toString();
+            switch (format) {
+                case "CELSIUS":
+                    return SIUnits.CELSIUS;
+                case "FAHRENHEIT":
+                    return ImperialUnits.FAHRENHEIT;
+                default:
+                    logger.debug("{}: unable to determine temperature scale, defaulting to: FAHRENHEIT", nm());
+                    return ImperialUnits.FAHRENHEIT;
+            }
+        }
+    }
+
+    /**
+     * Thermostat temperature format message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatTemperatureFormatMsgHandler extends CustomBitmaskMsgHandler {
+        ThermostatTemperatureFormatMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getBitFlagState(boolean isSet) {
+            String format = isSet ? "CELSIUS" : "FAHRENHEIT";
+            return new StringType(format);
+        }
+    }
+
+    /**
+     * Venstar thermostat temperature format message handler
+     */
+    @NonNullByDefault
+    public static class VenstarTemperatureFormatMsgHandler extends CustomMsgHandler {
+        VenstarTemperatureFormatMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public @Nullable State getState(int group, double value) {
+            String format = (int) value == 0x01 ? "CELSIUS" : "FAHRENHEIT";
+            return new StringType(format);
+        }
+    }
+
+    /**
+     * Thermostat time format message handler
+     */
+    @NonNullByDefault
+    public static class ThermostatTimeFormatMsgHandler extends CustomBitmaskMsgHandler {
+        ThermostatTimeFormatMsgHandler(DeviceFeature f) {
+            super(f);
+        }
+
+        @Override
+        public State getBitFlagState(boolean isSet) {
+            String format = isSet ? "24H" : "12H";
+            return new StringType(format);
+        }
+    }
+
 
     /**
      * Process X10 messages that are generated when another controller
@@ -1237,82 +1807,88 @@ public abstract class MessageHandler {
      */
     @NonNullByDefault
     public static class X10OnHandler extends MessageHandler {
-        X10OnHandler(DeviceFeature p) {
-            super(p);
+        X10OnHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonAddress a = f.getDevice().getAddress();
-            logger.debug("{}: set X10 device {} to ON", nm(), a);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: device {} changed to ON", nm(), feature.getDevice().getAddress());
+            }
             feature.publish(OnOffType.ON, StateChangeType.ALWAYS);
         }
     }
 
     @NonNullByDefault
     public static class X10OffHandler extends MessageHandler {
-        X10OffHandler(DeviceFeature p) {
-            super(p);
+        X10OffHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonAddress a = f.getDevice().getAddress();
-            logger.debug("{}: set X10 device {} to OFF", nm(), a);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: device {} changed to OFF", nm(), feature.getDevice().getAddress());
+            }
             feature.publish(OnOffType.OFF, StateChangeType.ALWAYS);
         }
     }
 
     @NonNullByDefault
     public static class X10BrightHandler extends MessageHandler {
-        X10BrightHandler(DeviceFeature p) {
-            super(p);
+        X10BrightHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonAddress a = f.getDevice().getAddress();
-            logger.debug("{}: ignoring brighten message for device {}", nm(), a);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: ignoring brighten message for device {}", nm(), feature.getDevice().getAddress());
+            }
         }
     }
 
     @NonNullByDefault
     public static class X10DimHandler extends MessageHandler {
-        X10DimHandler(DeviceFeature p) {
-            super(p);
+        X10DimHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonAddress a = f.getDevice().getAddress();
-            logger.debug("{}: ignoring dim message for device {}", nm(), a);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: ignoring dim message for device {}", nm(), feature.getDevice().getAddress());
+            }
         }
     }
 
     @NonNullByDefault
     public static class X10OpenHandler extends MessageHandler {
-        X10OpenHandler(DeviceFeature p) {
-            super(p);
+        X10OpenHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonAddress a = f.getDevice().getAddress();
-            logger.debug("{}: set X10 device {} to OPEN", nm(), a);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: device {} changed to OPEN", nm(), feature.getDevice().getAddress());
+            }
             feature.publish(OpenClosedType.OPEN, StateChangeType.ALWAYS);
         }
     }
 
     @NonNullByDefault
     public static class X10ClosedHandler extends MessageHandler {
-        X10ClosedHandler(DeviceFeature p) {
-            super(p);
+        X10ClosedHandler(DeviceFeature f) {
+            super(f);
         }
 
         @Override
-        public void handleMessage(int group, byte cmd1, Msg msg, DeviceFeature f) {
-            InsteonAddress a = f.getDevice().getAddress();
-            logger.debug("{}: set X10 device {} to CLOSED", nm(), a);
+        public void handleMessage(int group, byte cmd1, Msg msg) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("{}: device {} changed to CLOSED", nm(), feature.getDevice().getAddress());
+            }
             feature.publish(OpenClosedType.CLOSED, StateChangeType.ALWAYS);
         }
     }
@@ -1325,15 +1901,15 @@ public abstract class MessageHandler {
      * @param f the feature for which to create the handler
      * @return the handler which was created
      */
-    public static @Nullable <T extends MessageHandler> T makeHandler(String name, Map<String, @Nullable String> params,
-            DeviceFeature f) {
+    public static @Nullable <T extends MessageHandler> T makeHandler(String name,
+            Map<String, @Nullable String> params, DeviceFeature f) {
         String cname = MessageHandler.class.getName() + "$" + name;
         try {
             Class<?> c = Class.forName(cname);
             @SuppressWarnings("unchecked")
             Class<? extends T> dc = (Class<? extends T>) c;
             T mh = dc.getDeclaredConstructor(DeviceFeature.class).newInstance(f);
-            mh.setParameters(params);
+            mh.addParameters(params);
             return mh;
         } catch (ClassNotFoundException | InstantiationException | IllegalAccessException | IllegalArgumentException
                 | InvocationTargetException | NoSuchMethodException | SecurityException e) {

@@ -14,13 +14,9 @@ package org.openhab.binding.insteon.internal;
 
 import static org.openhab.binding.insteon.internal.InsteonBindingConstants.*;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -33,9 +29,11 @@ import org.eclipse.smarthome.core.thing.binding.BaseThingHandlerFactory;
 import org.eclipse.smarthome.core.thing.binding.ThingHandler;
 import org.eclipse.smarthome.core.thing.binding.ThingHandlerFactory;
 import org.eclipse.smarthome.io.transport.serial.SerialPortManager;
-import org.openhab.binding.insteon.internal.discovery.InsteonDeviceDiscoveryService;
+import org.openhab.binding.insteon.internal.discovery.InsteonDiscoveryService;
 import org.openhab.binding.insteon.internal.handler.InsteonDeviceHandler;
 import org.openhab.binding.insteon.internal.handler.InsteonNetworkHandler;
+import org.openhab.binding.insteon.internal.handler.InsteonSceneHandler;
+import org.openhab.binding.insteon.internal.handler.X10DeviceHandler;
 import org.osgi.framework.ServiceRegistration;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Reference;
@@ -45,18 +43,17 @@ import org.osgi.service.component.annotations.Reference;
  * handlers.
  *
  * @author Rob Nielsen - Initial contribution
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @Component(configurationPid = "binding.insteon", service = ThingHandlerFactory.class)
 public class InsteonHandlerFactory extends BaseThingHandlerFactory {
 
-    private static final Set<ThingTypeUID> SUPPORTED_THING_TYPES_UIDS = Collections
-            .unmodifiableSet(Stream.of(DEVICE_THING_TYPE, NETWORK_THING_TYPE).collect(Collectors.toSet()));
-
     private final Map<ThingUID, @Nullable ServiceRegistration<?>> discoveryServiceRegs = new HashMap<>();
     private final Map<ThingUID, @Nullable ServiceRegistration<?>> serviceRegs = new HashMap<>();
 
     private @Nullable SerialPortManager serialPortManager;
+    private @Nullable InsteonStateDescriptionProvider stateDescriptionProvider;
 
     @Reference
     protected void setSerialPortManager(final SerialPortManager serialPortManager) {
@@ -65,6 +62,15 @@ public class InsteonHandlerFactory extends BaseThingHandlerFactory {
 
     protected void unsetSerialPortManager(final SerialPortManager serialPortManager) {
         this.serialPortManager = null;
+    }
+
+    @Reference
+    protected void setDynamicStateDescriptionProvider(InsteonStateDescriptionProvider stateDescriptionProvider) {
+        this.stateDescriptionProvider = stateDescriptionProvider;
+    }
+
+    protected void unsetDynamicStateDescriptionProvider(InsteonStateDescriptionProvider stateDescriptionProvider) {
+        this.stateDescriptionProvider = null;
     }
 
     @Override
@@ -82,7 +88,11 @@ public class InsteonHandlerFactory extends BaseThingHandlerFactory {
 
             return insteonNetworkHandler;
         } else if (DEVICE_THING_TYPE.equals(thingTypeUID)) {
-            return new InsteonDeviceHandler(thing);
+            return new InsteonDeviceHandler(thing, stateDescriptionProvider);
+        } else if (SCENE_THING_TYPE.equals(thingTypeUID)) {
+            return new InsteonSceneHandler(thing);
+        } else if (X10_THING_TYPE.equals(thingTypeUID)) {
+            return new X10DeviceHandler(thing);
         }
 
         return null;
@@ -108,7 +118,7 @@ public class InsteonHandlerFactory extends BaseThingHandlerFactory {
         this.serviceRegs.put(handler.getThing().getUID(),
                 bundleContext.registerService(InsteonNetworkHandler.class.getName(), handler, new Hashtable<>()));
 
-        InsteonDeviceDiscoveryService discoveryService = new InsteonDeviceDiscoveryService(handler);
+        InsteonDiscoveryService discoveryService = new InsteonDiscoveryService(handler);
         this.discoveryServiceRegs.put(handler.getThing().getUID(),
                 bundleContext.registerService(DiscoveryService.class.getName(), discoveryService, new Hashtable<>()));
     }

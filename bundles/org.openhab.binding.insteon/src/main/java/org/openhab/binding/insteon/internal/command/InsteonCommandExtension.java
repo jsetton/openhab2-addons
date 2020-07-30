@@ -25,15 +25,15 @@ import org.eclipse.smarthome.io.console.Console;
 import org.eclipse.smarthome.io.console.extensions.AbstractConsoleCommandExtension;
 import org.eclipse.smarthome.io.console.extensions.ConsoleCommandExtension;
 import org.openhab.binding.insteon.internal.InsteonBinding;
-import org.openhab.binding.insteon.internal.device.DeviceFeature;
 import org.openhab.binding.insteon.internal.device.InsteonAddress;
 import org.openhab.binding.insteon.internal.device.InsteonDevice;
+import org.openhab.binding.insteon.internal.device.InsteonEngine;
 import org.openhab.binding.insteon.internal.handler.InsteonNetworkHandler;
 import org.openhab.binding.insteon.internal.message.FieldException;
 import org.openhab.binding.insteon.internal.message.InvalidMessageTypeException;
 import org.openhab.binding.insteon.internal.message.Msg;
 import org.openhab.binding.insteon.internal.message.MsgListener;
-import org.openhab.binding.insteon.internal.utils.Utils;
+import org.openhab.binding.insteon.internal.utils.ByteUtils;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.component.annotations.ReferenceCardinality;
@@ -45,14 +45,18 @@ import org.osgi.service.component.annotations.ReferencePolicyOption;
  * Console commands for the Insteon binding
  *
  * @author Rob Nielsen - Initial contribution
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @Component(service = ConsoleCommandExtension.class)
 public class InsteonCommandExtension extends AbstractConsoleCommandExtension implements MsgListener {
     private static final String DISPLAY_DEVICES = "display_devices";
     private static final String DISPLAY_CHANNELS = "display_channels";
-    private static final String DISPLAY_LOCAL_DATABASE = "display_local_database";
+    private static final String DISPLAY_DEVICE_DATABASE = "display_device_database";
+    private static final String DISPLAY_DEVICE_PRODUCT_DATA = "display_device_product_data";
+    private static final String DISPLAY_MODEM_DATABASE = "display_modem_database";
     private static final String DISPLAY_MONITORED = "display_monitored";
+    private static final String DISPLAY_SCENES = "display_scenes";
     private static final String START_MONITORING = "start_monitoring";
     private static final String STOP_MONITORING = "stop_monitoring";
     private static final String SEND_STANDARD_MESSAGE = "send_standard_message";
@@ -99,9 +103,23 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
                             printUsage(console);
                         }
                         break;
-                    case DISPLAY_LOCAL_DATABASE:
+                    case DISPLAY_DEVICE_DATABASE:
+                        if (args.length == 2) {
+                            handler.displayDeviceDatabase(console, args[1]);
+                        } else {
+                            printUsage(console);
+                        }
+                        break;
+                    case DISPLAY_DEVICE_PRODUCT_DATA:
+                        if (args.length == 2) {
+                            handler.displayDeviceProductData(console, args[1]);
+                        } else {
+                            printUsage(console);
+                        }
+                        break;
+                    case DISPLAY_MODEM_DATABASE:
                         if (args.length == 1) {
-                            handler.displayLocalDatabase(console);
+                            handler.displayModemDatabase(console);
                         } else {
                             printUsage(console);
                         }
@@ -109,6 +127,13 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
                     case DISPLAY_MONITORED:
                         if (args.length == 1) {
                             displayMonitoredDevices(console);
+                        } else {
+                            printUsage(console);
+                        }
+                        break;
+                    case DISPLAY_SCENES:
+                        if (args.length == 1) {
+                            handler.displayScenes(console);
                         } else {
                             printUsage(console);
                         }
@@ -162,14 +187,24 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
     @Override
     public List<String> getUsages() {
         return Arrays.asList(new String[] {
-                buildCommandUsage(DISPLAY_DEVICES, "display devices that are online, along with available channels"),
+                buildCommandUsage(DISPLAY_DEVICES,
+                        "display Insteon/X10 devices that are configured, along with available channels and status"),
                 buildCommandUsage(DISPLAY_CHANNELS,
-                        "display channels that are linked, along with configuration information"),
-                buildCommandUsage(DISPLAY_LOCAL_DATABASE, "display Insteon PLM or hub database details"),
-                buildCommandUsage(DISPLAY_MONITORED, "display monitored device(s)"),
+                        "display channel ids that are available, along with configuration information and link state"),
+                buildCommandUsage(DISPLAY_DEVICE_DATABASE + " address",
+                        "display device all-link database records"),
+                buildCommandUsage(DISPLAY_DEVICE_PRODUCT_DATA + " address",
+                        "display device product data"),
+                buildCommandUsage(DISPLAY_MODEM_DATABASE,
+                        "display Insteon PLM or hub database details"),
+                buildCommandUsage(DISPLAY_MONITORED,
+                        "display monitored device(s)"),
+                buildCommandUsage(DISPLAY_SCENES,
+                        "display Insteon scenes that are configured, along with available channels"),
                 buildCommandUsage(START_MONITORING + " all|address",
                         "start displaying messages received from device(s)"),
-                buildCommandUsage(STOP_MONITORING + " all|address", "stop displaying messages received from device(s)"),
+                buildCommandUsage(STOP_MONITORING + " all|address",
+                        "stop displaying messages received from device(s)"),
                 buildCommandUsage(SEND_STANDARD_MESSAGE + " address flags cmd1 cmd2",
                         "send standard message to a device"),
                 buildCommandUsage(SEND_EXTENDED_MESSAGE + " address flags cmd1 cmd2 [up to 13 bytes]",
@@ -179,8 +214,9 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
     }
 
     @Override
+    @SuppressWarnings("null")
     public void msg(Msg msg) {
-        if (monitorAllDevices || monitoredAddresses.contains(msg.getAddr("fromAddress"))) {
+        if (monitorAllDevices || monitoredAddresses.contains(msg.getAddressOrNull("fromAddress"))) {
             String date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(new Date());
             if (console != null) {
                 console.println(date + " " + msg.toString());
@@ -225,19 +261,17 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
             } else {
                 console.println("Already monitoring all devices.");
             }
-        } else {
-            try {
-                if (monitorAllDevices) {
-                    console.println("Already monitoring all devices.");
-                } else if (monitoredAddresses.add(new InsteonAddress(addr))) {
-                    console.println("Started monitoring the device " + addr + ".");
-                } else {
-                    console.println("Already monitoring the device " + addr + ".");
-                }
-            } catch (IllegalArgumentException e) {
-                console.println("Invalid device address" + addr + ".");
-                return;
+        } else if (InsteonAddress.isValid(addr)) {
+            if (monitorAllDevices) {
+                console.println("Already monitoring all devices.");
+            } else if (monitoredAddresses.add(new InsteonAddress(addr))) {
+                console.println("Started monitoring the device " + addr + ".");
+            } else {
+                console.println("Already monitoring the device " + addr + ".");
             }
+        } else {
+            console.println("Invalid device address" + addr + ".");
+            return;
         }
 
         if (monitoring == false) {
@@ -250,7 +284,7 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
 
     private void stopMonitoring(Console console, String addr) {
         if (monitoring == false) {
-            console.println("Not mointoring any devices.");
+            console.println("Not monitoring any devices.");
             return;
         }
 
@@ -261,38 +295,40 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
             } else {
                 console.println("Not monitoring all devices.");
             }
-        } else {
-            try {
-                if (monitorAllDevices) {
-                    console.println("Not monitoring individual devices.");
-                } else if (monitoredAddresses.remove(new InsteonAddress(addr))) {
-                    console.println("Stopped monitoring the device " + addr + ".");
-                } else {
-                    console.println("Not monitoring the device " + addr + ".");
-                    return;
-                }
-            } catch (IllegalArgumentException e) {
-                console.println("Invalid address device address " + addr + ".");
+        } else if (InsteonAddress.isValid(addr)) {
+            if (monitorAllDevices) {
+                console.println("Not monitoring individual devices.");
+            } else if (monitoredAddresses.remove(new InsteonAddress(addr))) {
+                console.println("Stopped monitoring the device " + addr + ".");
+            } else {
+                console.println("Not monitoring the device " + addr + ".");
                 return;
             }
+        } else {
+            console.println("Invalid address device address " + addr + ".");
+            return;
         }
 
         if (monitorAllDevices == false && monitoredAddresses.isEmpty()) {
-            getInsteonBinding().getDriver().removeListener(this);
+            getInsteonBinding().getDriver().removeMsgListener(this);
             this.console = null;
             monitoring = false;
         }
     }
 
     private void sendMessage(Console console, MessageType messageType, String[] args) {
-        InsteonDevice device = new InsteonDevice();
-        device.setDriver(getInsteonBinding().getDriver());
-
-        try {
-            device.setAddress(new InsteonAddress(args[1]));
-        } catch (IllegalArgumentException e) {
-            console.println("Invalid device address" + args[1] + ".");
+        String addr = args[1];
+        if (!InsteonAddress.isValid(addr)) {
+            console.println("Invalid device address " + addr + ".");
             return;
+        }
+
+        InsteonDevice device = getInsteonBinding().getDevice(addr);
+        if (device == null) {
+            device = new InsteonDevice();
+            device.setAddress(new InsteonAddress(addr));
+            device.setDriver(getInsteonBinding().getDriver());
+            device.setInsteonEngine(InsteonEngine.I2CS);
         }
 
         StringBuilder builder = new StringBuilder();
@@ -311,16 +347,16 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
         }
 
         try {
-            byte flags = (byte) Utils.fromHexString(args[2]);
-            byte cmd1 = (byte) Utils.fromHexString(args[3]);
-            byte cmd2 = (byte) Utils.fromHexString(args[4]);
+            byte flags = (byte) ByteUtils.hexStrToInt(args[2]);
+            byte cmd1 = (byte) ByteUtils.hexStrToInt(args[3]);
+            byte cmd2 = (byte) ByteUtils.hexStrToInt(args[4]);
             Msg msg;
             if (messageType == MessageType.STANDARD) {
                 msg = device.makeStandardMessage(flags, cmd1, cmd2);
             } else {
                 byte[] data = new byte[args.length - 5];
                 for (int i = 0; i + 5 < args.length; i++) {
-                    data[i] = (byte) Utils.fromHexString(args[i + 5]);
+                    data[i] = (byte) ByteUtils.hexStrToInt(args[i + 5]);
                 }
 
                 if (messageType == MessageType.EXTENDED) {
@@ -329,8 +365,8 @@ public class InsteonCommandExtension extends AbstractConsoleCommandExtension imp
                     msg = device.makeExtendedMessageCRC2(flags, cmd1, cmd2, data);
                 }
             }
-            device.enqueueMessage(msg, new DeviceFeature(device, "console"));
-        } catch (FieldException | InvalidMessageTypeException e) {
+            device.enqueueRequest(msg, "console");
+        } catch (FieldException | InvalidMessageTypeException | NumberFormatException e) {
             console.println("Error while trying to create message.");
         }
     }

@@ -13,7 +13,7 @@
 package org.openhab.binding.insteon.internal.device;
 
 import java.util.HashMap;
-import java.util.Map.Entry;
+import java.util.Map;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -26,24 +26,23 @@ import org.eclipse.smarthome.core.types.Command;
  *
  * @author Daniel Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 @SuppressWarnings("null")
 public class FeatureTemplate {
     private String name;
-    private String timeout;
-    private boolean isStatus;
     private @Nullable HandlerEntry dispatcher = null;
     private @Nullable HandlerEntry pollHandler = null;
     private @Nullable HandlerEntry defaultMsgHandler = null;
     private @Nullable HandlerEntry defaultCmdHandler = null;
-    private HashMap<Integer, HandlerEntry> messageHandlers = new HashMap<>();
-    private HashMap<Class<? extends Command>, HandlerEntry> commandHandlers = new HashMap<>();
+    private Map<Integer, HandlerEntry> messageHandlers = new HashMap<>();
+    private Map<Class<? extends Command>, HandlerEntry> commandHandlers = new HashMap<>();
+    private Map<String, @Nullable String> parameters = new HashMap<>();
 
-    public FeatureTemplate(String name, boolean isStatus, String timeout) {
+    public FeatureTemplate(String name, Map<String, @Nullable String> parameters) {
         this.name = name;
-        this.isStatus = isStatus;
-        this.timeout = timeout;
+        this.parameters = parameters;
     }
 
     // simple getters
@@ -51,12 +50,8 @@ public class FeatureTemplate {
         return name;
     }
 
-    public String getTimeout() {
-        return timeout;
-    }
-
-    public boolean isStatusFeature() {
-        return isStatus;
+    public Map<String, @Nullable String> getParameters() {
+        return parameters;
     }
 
     public @Nullable HandlerEntry getPollHandler() {
@@ -80,7 +75,7 @@ public class FeatureTemplate {
      *
      * @return a Hashmap from Integer to String representing the command codes and the associated message handlers
      */
-    public HashMap<Integer, HandlerEntry> getMessageHandlers() {
+    public Map<Integer, HandlerEntry> getMessageHandlers() {
         return messageHandlers;
     }
 
@@ -91,7 +86,7 @@ public class FeatureTemplate {
      * @see #getMessageHandlers()
      * @return a HashMap from Command Classes to CommandHandler names
      */
-    public HashMap<Class<? extends Command>, HandlerEntry> getCommandHandlers() {
+    public Map<Class<? extends Command>, HandlerEntry> getCommandHandlers() {
         return commandHandlers;
     }
 
@@ -105,8 +100,8 @@ public class FeatureTemplate {
         pollHandler = he;
     }
 
-    public void setDefaultCommandHandler(HandlerEntry cmd) {
-        defaultCmdHandler = cmd;
+    public void setDefaultCommandHandler(HandlerEntry he) {
+        defaultCmdHandler = he;
     }
 
     public void setDefaultMessageHandler(HandlerEntry he) {
@@ -117,16 +112,19 @@ public class FeatureTemplate {
      * Adds a message handler mapped from the command which this handler should be invoked for
      * to the name of the handler to be created
      *
-     * @param cmd command to be mapped
+     * @param command command to be mapped
      * @param he handler entry to map to
      */
-    public void addMessageHandler(int cmd, HandlerEntry he) {
-        messageHandlers.put(cmd, he);
+    public void addMessageHandler(int command, HandlerEntry he) {
+        messageHandlers.put(command, he);
     }
 
     /**
      * Adds a command handler mapped from the command class which this handler should be invoke for
      * to the name of the handler to be created
+     *
+     * @param command command to be mapped
+     * @param he handler entry to map to
      */
     public void addCommandHandler(Class<? extends Command> command, HandlerEntry he) {
         commandHandlers.put(command, he);
@@ -139,35 +137,62 @@ public class FeatureTemplate {
      */
     public DeviceFeature build() {
         DeviceFeature f = new DeviceFeature(name);
-        f.setStatusFeature(isStatus);
-        f.setTimeout(timeout);
+        // add feature template parameters to device feature
+        f.addParameters(parameters);
+
         if (dispatcher != null) {
-            f.setMessageDispatcher(MessageDispatcher.makeHandler(dispatcher.getName(), dispatcher.getParams(), f));
+            f.setMessageDispatcher(MessageDispatcher.makeHandler(dispatcher.getName(), dispatcher.getParameters(), f));
         }
         if (pollHandler != null) {
-            f.setPollHandler(PollHandler.makeHandler(pollHandler, f));
+            f.setPollHandler(PollHandler.makeHandler(pollHandler.getName(), pollHandler.getParameters(), f));
         }
         if (defaultCmdHandler != null) {
             f.setDefaultCommandHandler(
-                    CommandHandler.makeHandler(defaultCmdHandler.getName(), defaultCmdHandler.getParams(), f));
+                    CommandHandler.makeHandler(defaultCmdHandler.getName(), defaultCmdHandler.getParameters(), f));
         }
         if (defaultMsgHandler != null) {
             f.setDefaultMsgHandler(
-                    MessageHandler.makeHandler(defaultMsgHandler.getName(), defaultMsgHandler.getParams(), f));
+                    MessageHandler.makeHandler(defaultMsgHandler.getName(), defaultMsgHandler.getParameters(), f));
         }
-        for (Entry<Integer, HandlerEntry> mH : messageHandlers.entrySet()) {
+        for (Map.Entry<Integer, HandlerEntry> mH : messageHandlers.entrySet()) {
             f.addMessageHandler(mH.getKey(),
-                    MessageHandler.makeHandler(mH.getValue().getName(), mH.getValue().getParams(), f));
+                    MessageHandler.makeHandler(mH.getValue().getName(), mH.getValue().getParameters(), f));
         }
-        for (Entry<Class<? extends Command>, HandlerEntry> cH : commandHandlers.entrySet()) {
+        for (Map.Entry<Class<? extends Command>, HandlerEntry> cH : commandHandlers.entrySet()) {
             f.addCommandHandler(cH.getKey(),
-                    CommandHandler.makeHandler(cH.getValue().getName(), cH.getValue().getParams(), f));
+                    CommandHandler.makeHandler(cH.getValue().getName(), cH.getValue().getParameters(), f));
         }
         return f;
     }
 
     @Override
     public String toString() {
-        return getName() + "(" + isStatusFeature() + ")";
+        String s = name;
+        if (!parameters.isEmpty()) {
+          s += parameters;
+        }
+        return s;
+    }
+
+    /**
+     * Class that reflects handler entry
+     */
+    @NonNullByDefault
+    public static class HandlerEntry {
+        String name;
+        Map<String, @Nullable String> parameters;
+
+        HandlerEntry(String name, Map<String, @Nullable String> parameters) {
+            this.name = name;
+            this.parameters = parameters;
+        }
+
+        String getName() {
+            return name;
+        }
+
+        Map<String, @Nullable String> getParameters() {
+            return parameters;
+        }
     }
 }

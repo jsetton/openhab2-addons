@@ -19,32 +19,46 @@ import org.eclipse.jdt.annotation.Nullable;
  * The {@link InsteonNetworkConfiguration} class contains fields mapping thing configuration parameters.
  *
  * @author Rob Nielsen - Initial contribution
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 public class InsteonNetworkConfiguration {
 
-    // required parameter
+    // required parameters
     private String port = "";
-
-    private @Nullable Integer devicePollIntervalSeconds;
-
-    private @Nullable String additionalDevices;
-
+    private int devicePollIntervalSeconds = 300;
+    private boolean deviceDiscoveryEnabled = true;
+    private boolean sceneDiscoveryEnabled = false;
+    // optional parameters
+    private @Nullable String additionalDeviceTypes;
     private @Nullable String additionalFeatures;
+    private @Nullable String additionalProducts;
 
     public String getPort() {
         return port;
     }
 
-    public @Nullable Integer getDevicePollIntervalSeconds() {
+    public boolean getDeviceDiscoveryEnabled() {
+        return deviceDiscoveryEnabled;
+    }
+
+    public int getDevicePollIntervalSeconds() {
         return devicePollIntervalSeconds;
     }
 
-    public @Nullable String getAdditionalDevices() {
-        return additionalDevices;
+    public boolean getSceneDiscoveryEnabled() {
+        return sceneDiscoveryEnabled;
+    }
+
+    public @Nullable String getAdditionalDeviceTypes() {
+        return additionalDeviceTypes;
     }
 
     public @Nullable String getAdditionalFeatures() {
         return additionalFeatures;
+    }
+
+    public @Nullable String getAdditionalProducts() {
+        return additionalProducts;
     }
 }

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<thing:thing-descriptions bindingId="insteon"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:thing="https://openhab.org/schemas/thing-description/v1.0.0"
+	xsi:schemaLocation="https://openhab.org/schemas/thing-description/v1.0.0 https://openhab.org/schemas/thing-description-1.0.0.xsd">
+
+	<bridge-type id="network">
+		<label>Insteon Network</label>
+		<description>An Insteon PLM or hub that is used to communicate with Insteon devices.</description>
+
+		<config-description>
+			<parameter name="port" type="text" required="true">
+				<label>Port</label>
+				<description>Configuration information that is used to connect to PLM or hub.</description>
+			</parameter>
+
+			<parameter name="devicePollIntervalSeconds" type="integer" min="5" max="3600" required="true">
+				<label>Device Poll Interval</label>
+				<description>Device poll interval in seconds.</description>
+				<default>300</default>
+			</parameter>
+
+			<parameter name="deviceDiscoveryEnabled" type="boolean" required="true">
+				<label>Enable Discovery Missing Insteon Devices</label>
+				<description>Enable discovery of Insteon devices found in the modem database but not configured.</description>
+				<default>true</default>
+			</parameter>
+
+			<parameter name="sceneDiscoveryEnabled" type="boolean" required="true">
+				<label>Enable Discovery Missing Insteon Scenes</label>
+				<description>Enable discovery of Insteon scenes found in the modem database but not configured.</description>
+				<default>false</default>
+			</parameter>
+
+			<parameter name="additionalDeviceTypes" type="text">
+				<label>Additional Device Types</label>
+				<description>Additional device types file path.</description>
+				<advanced>true</advanced>
+			</parameter>
+
+			<parameter name="additionalFeatures" type="text">
+				<label>Additional Features</label>
+				<description>Additional feature templates file path.</description>
+				<advanced>true</advanced>
+			</parameter>
+
+			<parameter name="additionalProducts" type="text">
+				<label>Additional Products</label>
+				<description>Additional products file path.</description>
+				<advanced>true</advanced>
+			</parameter>
+		</config-description>
+	</bridge-type>
+
+</thing:thing-descriptions>

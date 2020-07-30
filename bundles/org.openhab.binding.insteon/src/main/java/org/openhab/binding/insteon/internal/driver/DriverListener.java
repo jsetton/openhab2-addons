@@ -13,6 +13,7 @@
 package org.openhab.binding.insteon.internal.driver;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
+import org.openhab.binding.insteon.internal.device.InsteonAddress;
 
 /**
  * Interface for classes that want to listen to notifications from
@@ -20,16 +21,45 @@ import org.eclipse.jdt.annotation.NonNullByDefault;
  *
  * @author Bernd Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 public interface DriverListener {
     /**
-     * Notification that querying of the modems on all ports has successfully completed.
-     */
-    public abstract void driverCompletelyInitialized();
-
-    /**
      * Notification that the driver was disconnected
      */
-    public abstract void disconnected();
+    public void disconnected();
+
+    /**
+     * Notification that the modem database is complete
+     */
+    public void modemDBComplete();
+
+    /**
+     * Notification that the modem database has been updated
+     *
+     * @param addr  the updated device address
+     * @param group the updated link group
+     */
+    public void modemDBUpdated(InsteonAddress addr, int group);
+
+    /**
+     * Notification that the modem has been found
+     */
+    public void modemFound();
+
+    /**
+     * Notification that a product data has been updated
+     *
+     * @param addr the updated product data device address
+     */
+    public void productDataUpdated(InsteonAddress addr);
+
+    /**
+     * Notification that the port has sent a message request
+     *
+     * @param addr the device address the request was sent to
+     * @param time the time the request was sent
+     */
+    public void requestSent(InsteonAddress addr, long time);
 }

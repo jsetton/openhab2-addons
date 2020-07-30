@@ -70,17 +70,19 @@ public class Poller {
     /**
      * Register a device for polling.
      *
-     * @param d device to register for polling
-     * @param aNumDev approximate number of total devices
+     * @param dev device to register for polling
+     * @param numDev approximate number of total devices
      */
-    public void startPolling(InsteonDevice d, int aNumDev) {
-        logger.debug("start polling device {}", d);
+    public void startPolling(InsteonDevice dev, int numDev) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("start polling device {}", dev.getAddress());
+        }
         synchronized (pollQueue) {
             // try to spread out the scheduling when
             // starting up
             int n = pollQueue.size();
-            long pollDelay = n * d.getPollInterval() / (aNumDev > 0 ? aNumDev : 1);
-            addToPollQueue(d, System.currentTimeMillis() + pollDelay);
+            long pollDelay = n * dev.getPollInterval() / (numDev > 0 ? numDev : 1);
+            addToPollQueue(dev, System.currentTimeMillis() + pollDelay);
             pollQueue.notify();
         }
     }
@@ -88,14 +90,16 @@ public class Poller {
     /**
      * Start polling a given device
      *
-     * @param d reference to the device to be polled
+     * @param dev reference to the device to be polled
      */
-    public void stopPolling(InsteonDevice d) {
+    public void stopPolling(InsteonDevice dev) {
         synchronized (pollQueue) {
             for (Iterator<PQEntry> i = pollQueue.iterator(); i.hasNext();) {
-                if (i.next().getDevice().getAddress().equals(d.getAddress())) {
+                if (i.next().getDevice().getAddress().equals(dev.getAddress())) {
                     i.remove();
-                    logger.debug("stopped polling device {}", d);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("stopped polling device {}", dev.getAddress());
+                    }
                 }
             }
         }
@@ -138,15 +142,17 @@ public class Poller {
      * Adds a device to the poll queue. After this call, the device's doPoll() method
      * will be called according to the polling frequency set.
      *
-     * @param d the device to poll periodically
+     * @param dev the device to poll periodically
      * @param time the target time for the next poll to happen. Note that this time is merely
      *            a suggestion, and may be adjusted, because there must be at least a minimum gap in polling.
      */
 
-    private void addToPollQueue(InsteonDevice d, long time) {
-        long texp = findNextExpirationTime(d, time);
-        PQEntry ne = new PQEntry(d, texp);
-        logger.trace("added entry {} originally aimed at time {}", ne, String.format("%tc", new Date(time)));
+    private void addToPollQueue(InsteonDevice dev, long time) {
+        long expTime = findNextExpirationTime(dev, time);
+        PQEntry ne = new PQEntry(dev, expTime);
+        if (logger.isTraceEnabled()) {
+            logger.trace("added entry {} originally aimed at time {}", ne, String.format("%tc", new Date(time)));
+        }
         pollQueue.add(ne);
     }
 
@@ -155,35 +161,38 @@ public class Poller {
      * desired expiration time, but does not collide with any of the already scheduled
      * polls.
      *
-     * @param d device to poll (for logging)
-     * @param aTime desired time after which the device should be polled
+     * @param dev device to poll (for logging)
+     * @param time desired time after which the device should be polled
      * @return the suggested time to poll
      */
 
-    private long findNextExpirationTime(InsteonDevice d, long aTime) {
-        long expTime = aTime;
+    private long findNextExpirationTime(InsteonDevice dev, long time) {
+        long expTime;
         // tailSet finds all those that expire after aTime - buffer
-        SortedSet<PQEntry> ts = pollQueue.tailSet(new PQEntry(d, aTime - MIN_MSEC_BETWEEN_POLLS));
+        SortedSet<PQEntry> ts = pollQueue.tailSet(new PQEntry(dev, time - MIN_MSEC_BETWEEN_POLLS));
         if (ts.isEmpty()) {
             // all entries in the poll queue are ahead of the new element,
             // go ahead and simply add it to the end
-            expTime = aTime;
+            expTime = time;
         } else {
             Iterator<PQEntry> pqi = ts.iterator();
             PQEntry prev = pqi.next();
-            if (prev.getExpirationTime() > aTime + MIN_MSEC_BETWEEN_POLLS) {
+            if (prev.getExpirationTime() > time + MIN_MSEC_BETWEEN_POLLS) {
                 // there is a time slot free before the head of the tail set
-                expTime = aTime;
+                expTime = time;
             } else {
                 // look for a gap where we can squeeze in
                 // a new poll while maintaining MIN_MSEC_BETWEEN_POLLS
                 while (pqi.hasNext()) {
                     PQEntry pqe = pqi.next();
-                    long tcurr = pqe.getExpirationTime();
-                    long tprev = prev.getExpirationTime();
-                    if (tcurr - tprev >= 2 * MIN_MSEC_BETWEEN_POLLS) {
+                    long currTime = pqe.getExpirationTime();
+                    long prevTime = prev.getExpirationTime();
+                    if (currTime - prevTime >= 2 * MIN_MSEC_BETWEEN_POLLS) {
                         // found gap
-                        logger.trace("dev {} time {} found slot between {} and {}", d, aTime, tprev, tcurr);
+                        if (logger.isTraceEnabled()) {
+                            logger.trace("dev {} time {} found slot between {} and {}", dev.getAddress(), time,
+                                    prevTime, currTime);
+                        }
                         break;
                     }
                     prev = pqe;
@@ -231,10 +240,14 @@ public class Poller {
             long tfirst = pqe.getExpirationTime();
             long dt = tfirst - now;
             if (dt > 0) { // must wait for this item to expire
-                logger.trace("waiting for {} msec until {} comes due", dt, pqe);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("waiting for {} msec until {} comes due", dt, pqe);
+                }
                 pollQueue.wait(dt);
             } else { // queue entry has expired, process it!
-                logger.trace("entry {} expired at time {}", pqe, now);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("entry {} expired at time {}", pqe, now);
+                }
                 processQueue(now);
             }
         }

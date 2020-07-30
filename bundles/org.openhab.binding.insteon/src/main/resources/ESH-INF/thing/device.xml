@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<thing:thing-descriptions bindingId="insteon"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:thing="https://openhab.org/schemas/thing-description/v1.0.0"
+	xsi:schemaLocation="https://openhab.org/schemas/thing-description/v1.0.0 https://openhab.org/schemas/thing-description-1.0.0.xsd">
+
+	<thing-type id="device">
+		<supported-bridge-type-refs>
+			<bridge-type-ref id="network"/>
+		</supported-bridge-type-refs>
+
+		<label>Insteon Device</label>
+		<description>Insteon device such as a switch, dimmer, keypad, sensor, etc.</description>
+
+		<config-description>
+			<parameter name="address" type="text" required="true" pattern="[0-9A-F]{2}\.[0-9A-F]{2}\.[0-9A-F]{2}">
+				<label>Address</label>
+				<description>Insteon address of the device. Example: 12.34.56</description>
+			</parameter>
+
+			<parameter name="devCat" type="text" pattern="0x[0-9A-F]{2}">
+				<label>Device Category</label>
+				<description>Insteon device category. Example: 0x01</description>
+				<advanced>true</advanced>
+			</parameter>
+
+			<parameter name="subCat" type="text" pattern="0x[0-9A-F]{2}">
+				<label>Device Sub Category</label>
+				<description>Insteon device sub category. Example: 0x01</description>
+				<advanced>true</advanced>
+			</parameter>
+
+			<parameter name="productKey" type="text" pattern="0x[0-9A-F]{6}">
+				<label>Product Key</label>
+				<description>Insteon product key. Example: 0x000001</description>
+				<advanced>true</advanced>
+			</parameter>
+		</config-description>
+	</thing-type>
+
+</thing:thing-descriptions>

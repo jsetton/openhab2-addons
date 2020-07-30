@@ -14,6 +14,7 @@ package org.openhab.binding.insteon.internal.device;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -29,9 +30,14 @@ import org.eclipse.smarthome.core.library.types.DecimalType;
 import org.eclipse.smarthome.core.library.types.IncreaseDecreaseType;
 import org.eclipse.smarthome.core.library.types.OnOffType;
 import org.eclipse.smarthome.core.library.types.PercentType;
+import org.eclipse.smarthome.core.library.types.QuantityType;
+import org.eclipse.smarthome.core.library.types.StopMoveType;
+import org.eclipse.smarthome.core.library.types.StringType;
+import org.eclipse.smarthome.core.library.types.UpDownType;
 import org.eclipse.smarthome.core.types.Command;
-import org.openhab.binding.insteon.internal.utils.Utils;
-import org.openhab.binding.insteon.internal.utils.Utils.ParsingException;
+import org.openhab.binding.insteon.internal.device.FeatureTemplate.HandlerEntry;
+import org.openhab.binding.insteon.internal.utils.ByteUtils;
+import org.openhab.binding.insteon.internal.utils.ParsingException;
 import org.w3c.dom.DOMException;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -45,6 +51,7 @@ import org.xml.sax.SAXException;
  *
  * @author Daniel Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 public class FeatureTemplateLoader {
@@ -65,7 +72,7 @@ public class FeatureTemplateLoader {
                 Node node = nodes.item(i);
                 if (node.getNodeType() == Node.ELEMENT_NODE) {
                     Element e = (Element) node;
-                    if (e.getTagName().equals("feature")) {
+                    if (e.getTagName().equals("feature-type")) {
                         features.add(parseFeature(e));
                     }
                 }
@@ -80,8 +87,8 @@ public class FeatureTemplateLoader {
 
     private static FeatureTemplate parseFeature(Element e) throws ParsingException {
         String name = e.getAttribute("name");
-        boolean statusFeature = e.getAttribute("statusFeature").equals("true");
-        FeatureTemplate feature = new FeatureTemplate(name, statusFeature, e.getAttribute("timeout"));
+        Map<String, @Nullable String> params = getParameters(e);
+        FeatureTemplate feature = new FeatureTemplate(name, params);
 
         NodeList nodes = e.getChildNodes();
 
@@ -109,14 +116,20 @@ public class FeatureTemplateLoader {
         if (handler == null) {
             throw new ParsingException("Could not find Handler for: " + e.getTextContent());
         }
+        return new HandlerEntry(handler, getParameters(e));
+    }
 
+    private static Map<String, @Nullable String> getParameters(Element e) throws ParsingException {
         NamedNodeMap attributes = e.getAttributes();
         Map<String, @Nullable String> params = new HashMap<>();
+        List<String> excludeList = Arrays.asList("name", "command", "default");
         for (int i = 0; i < attributes.getLength(); i++) {
             Node n = attributes.item(i);
-            params.put(n.getNodeName(), n.getNodeValue());
+            if (!excludeList.contains(n.getNodeName())) {
+                params.put(n.getNodeName(), n.getNodeValue());
+            }
         }
-        return new HandlerEntry(handler, params);
+        return params;
     }
 
     private static void parseMessageHandler(Element e, FeatureTemplate f) throws DOMException, ParsingException {
@@ -124,8 +137,7 @@ public class FeatureTemplateLoader {
         if (e.getAttribute("default").equals("true")) {
             f.setDefaultMessageHandler(he);
         } else {
-            String attr = e.getAttribute("cmd");
-            int command = (attr == null) ? 0 : Utils.from0xHexString(attr);
+            int command = parseCommandHexValue(e.getAttribute("command"));
             f.addMessageHandler(command, he);
         }
     }
@@ -150,6 +162,14 @@ public class FeatureTemplateLoader {
         f.setPollHandler(he);
     }
 
+    private static int parseCommandHexValue(String h) throws ParsingException {
+        try {
+            return ByteUtils.hexStrToInt(h);
+        } catch (NumberFormatException e) {
+            throw new ParsingException("Unknown Command Hex Value");
+        }
+    }
+
     private static Class<? extends Command> parseCommandClass(String c) throws ParsingException {
         if (c.equals("OnOffType")) {
             return OnOffType.class;
@@ -159,6 +179,14 @@ public class FeatureTemplateLoader {
             return DecimalType.class;
         } else if (c.equals("IncreaseDecreaseType")) {
             return IncreaseDecreaseType.class;
+        } else if (c.equals("QuantityType")) {
+            return QuantityType.class;
+        } else if (c.equals("StringType")) {
+            return StringType.class;
+        } else if (c.equals("UpDownType")) {
+            return UpDownType.class;
+        } else if (c.equals("StopMoveType")) {
+            return StopMoveType.class;
         } else {
             throw new ParsingException("Unknown Command Type");
         }

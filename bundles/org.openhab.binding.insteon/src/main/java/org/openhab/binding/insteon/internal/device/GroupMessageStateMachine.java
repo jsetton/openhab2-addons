@@ -13,7 +13,7 @@
 package org.openhab.binding.insteon.internal.device;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
-import org.openhab.binding.insteon.internal.utils.Utils;
+import org.openhab.binding.insteon.internal.utils.ByteUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,9 +68,12 @@ import org.slf4j.LoggerFactory;
  *
  * @author Bernd Pfrommer - Initial contribution
  * @author Rob Nielsen - Port to openHAB 2 insteon binding
+ * @author Jeremy Setton - Improvement to openHAB 2 insteon binding
  */
 @NonNullByDefault
 public class GroupMessageStateMachine {
+    private static final int GROUP_STATE_TIMEOUT = 10000;
+
     private final Logger logger = LoggerFactory.getLogger(GroupMessageStateMachine.class);
 
     /**
@@ -136,23 +139,20 @@ public class GroupMessageStateMachine {
             case EXPECT_CLEAN:
                 switch (a) {
                     case BCAST:
-                        if (lastCmd1 == cmd1) {
-                            if (currentTime > lastUpdated + 30000) {
-                                if (logger.isDebugEnabled()) {
-                                    logger.debug(
-                                            "{} group {} cmd1 {} is not a dup BCAST, received last message over 30000 ms ago",
-                                            address, group, Utils.getHexByte(cmd1));
-                                }
-                                publish = true;
-                            } else {
-                                publish = false;
-                            }
-                        } else {
+                        if (lastCmd1 != cmd1) {
                             if (logger.isDebugEnabled()) {
-                                logger.debug("{} group {} cmd1 {} is not a dup BCAST, last cmd1 {}", address, group,
-                                        Utils.getHexByte(cmd1), Utils.getHexByte(lastCmd1));
+                                logger.debug("{} group {} cmd1 {} is not a dup BCAST, last cmd1 {}",
+                                        address, group, ByteUtils.getHexString(cmd1), ByteUtils.getHexString(lastCmd1));
                             }
                             publish = true;
+                        } else if (currentTime > lastUpdated + GROUP_STATE_TIMEOUT) {
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("{} group {} cmd1 {} is not a dup BCAST, last state {} timed out",
+                                        address, group, ByteUtils.getHexString(cmd1), state);
+                            }
+                            publish = true;
+                        } else {
+                            publish = false;
                         }
                         break; // missed(CLEAN, SUCCESS) or dup BCAST
                     case CLEAN:
@@ -192,7 +192,9 @@ public class GroupMessageStateMachine {
 
         lastCmd1 = cmd1;
         lastUpdated = currentTime;
-        logger.debug("{} group {} state: {} --{}--> {}, publish: {}", address, group, oldState, a, state, publish);
+        if (logger.isDebugEnabled()) {
+            logger.debug("{} group {} state: {} --{}--> {}, publish: {}", address, group, oldState, a, state, publish);
+        }
         return (publish);
     }
 
